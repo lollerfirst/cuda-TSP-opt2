@@ -109,9 +109,10 @@ __device__ void unlock(short* mutex)
 
 // Worker threads
 __global__ void cuda_calculate_opts(
-	int* opts_paths,
+	int* opts_path,
 	int* current_path,
-	int* opts_best_dist)
+	int* opts_best_dist,
+	int initial_idx)
 {
 	// Thread identification
 	int tid = threadIdx.x + (blockIdx.x * blockDim.x);
@@ -137,21 +138,57 @@ __global__ void cuda_calculate_opts(
 		accumulator += (NUM_CITIES - 2) - swap_range;
 	}
 	
-	opts_paths = opts_paths + (tid * NUM_CITIES);
+	opts_path = opts_path + (tid * NUM_CITIES);
 	
 	// Find a way to univokely change 2 nodes in the path
 	size_t i;
-	int best_dist;
+	int to_swap = swap_range + (tid % accumulator);
+	int distance = 0;
+	int previous_idx = initial_idx;
+	
 	for (i=0; i<NUM_CITIES; ++i)
 	{
-		opts_paths[i] = current_path[i];
+		opts_path[i] = current_path[i];
 		
-		// TODO: swap path
+		
+		if (to_swap == i)
+		{
+			int temp = opts_path[swap_range];
+			opts_path[swap_range] =  opts_path[to_swap];
+			opts_path[to_swap] = temp;
+		}
+		
+		distance += device_cities[(previous_idx*NUM_CITIES) + opts_path[i]];
+		previous_idx = opts_path[i];
 	}
+	
+	
+	// Acquire the lock
+	while (trylock(&lock) == false);
+	
+	if (distance >= (*opts_best_dist))
+	{
+		unlock(&lock);
+		return;
+	}
+	
+	*opts_best_dist = distance;
+	
+	// Copy the path calculated in this thread
+	for (i=0; i<NUM_CITIES; ++i)
+	{
+		current_path[i] = opts_path[i];
+	}
+	
+	// Release the lock
+	unlock(&lock);
 }
 
 // Control thread
-__global__ void cuda_opt2(int* opts_paths, int* current_path, int* opts_best_dist)
+__global__ void cuda_opt2(int* opts_paths,
+	int* current_path,
+	int* opts_best_dist,
+	int initial_idx)
 {
   	
   	// set the block and grid sizes
@@ -167,7 +204,8 @@ __global__ void cuda_opt2(int* opts_paths, int* current_path, int* opts_best_dis
 		cuda_calculate_opts<<<num_blocks, BLOCK_SIZE>>>(
 			opts_paths,
 			current_path,
-			opts_best_dist
+			opts_best_dist,
+			initial_idx
 		);
 		
 	}
