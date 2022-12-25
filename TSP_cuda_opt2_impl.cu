@@ -7,7 +7,7 @@
 #define BLOCK_SIZE 256
 #define NUM_OPTS (((NUM_CITIES * (NUM_CITIES - 3)) / 2) + 1)
 
-// data structure holding the cities: adjaciency list
+// distances matrix
 static int cities[NUM_CITIES * NUM_CITIES];
 
 // device data
