@@ -12,7 +12,7 @@ static int cities[NUM_CITIES * NUM_CITIES];
 
 // device data
 __constant__ int device_cities[NUM_CITIES * NUM_CITIES];
-__device__ bool lock;
+__device__ short lock;
 
 // build the data structure on the host
 void build_cities(void)
@@ -86,14 +86,25 @@ int greedy_path_dist(int* path, int initial_idx)
 	return distance;
 }
 
-__device__ bool trylock(bool* mutex)
+__device__ bool trylock(short* mutex)
 {
-	// TODO: non-blocking, atomic lock acquisition implementation
+	// Aquire the lock with an atomic compare exchange
+	short old = atomicCAS(mutex, 0, 1);
+	
+	if (old == 1)
+	{
+		return false;
+	}
+	else
+	{
+		return true;
+	}
 }
 
-__device__ void unlock(bool* mutex)
+__device__ void unlock(short* mutex)
 {
-	// TODO: atomic release of lock
+	// Release the lock with an atomic exchange
+	atomicExch(mutex, 0);
 }
 
 // Worker threads
