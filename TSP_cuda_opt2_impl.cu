@@ -3,7 +3,7 @@
 #include <stdbool.h>
 
 #define NUM_CITIES 10
-#define MAX_LENGTH 32767
+#define MAX_DISTANCE 32767
 #define BLOCK_SIZE 256
 #define NUM_OPTS (((NUM_CITIES * (NUM_CITIES - 3)) / 2) + 1)
 
@@ -12,7 +12,7 @@ static int cities[NUM_CITIES * NUM_CITIES];
 
 // device data
 __constant__ int device_cities[NUM_CITIES * NUM_CITIES];
-__device__ short lock;
+__device__ unsigned int lock;
 
 // build the data structure on the host
 void build_cities(void)
@@ -43,9 +43,11 @@ int greedy_path_dist(int* path, int initial_idx)
 	
 	bool visited_cities[NUM_CITIES] = {0};
 	
-	// can't choose the initial before having ended the tour
+	// Can't choose the initial before having ended the tour
 	visited_cities[initial_idx] = true;
 	
+	
+	// For every node in the path
 	for (i=0; i<NUM_CITIES; ++i)
 	{		
 		if (i != NUM_CITIES - 1)
@@ -54,6 +56,7 @@ int greedy_path_dist(int* path, int initial_idx)
 			int best_idx = -1;
 			size_t j;
 			
+			// For every possible link
 			for (j=0; j<NUM_CITIES; ++j)
 			{
 				if (idx != j &&
@@ -86,10 +89,10 @@ int greedy_path_dist(int* path, int initial_idx)
 	return distance;
 }
 
-__device__ bool trylock(short* mutex)
+__device__ bool trylock(unsigned int* mutex)
 {
 	// Aquire the lock with an atomic compare exchange
-	short old = atomicCAS(mutex, 0, 1);
+	int old = atomicCAS(mutex, 0, 1);
 	
 	if (old == 1)
 	{
@@ -101,7 +104,7 @@ __device__ bool trylock(short* mutex)
 	}
 }
 
-__device__ void unlock(short* mutex)
+__device__ void unlock(unsigned int* mutex)
 {
 	// Release the lock with an atomic exchange
 	atomicExch(mutex, 0);
@@ -208,6 +211,9 @@ __global__ void cuda_opt2(int* opts_paths,
 			initial_idx
 		);
 		
+		// Wait for children to terminate
+		cudaDeviceSynchronize();
+		
 	}
 	while ((*opts_best_dist) < best_dist);
 	
@@ -235,7 +241,7 @@ int main(void)
 	
     	// initial path chosen with a greedy heuristic, stored in current_path
     	int current_path[NUM_CITIES];
-    	int best_dist = greedy_path_dist(current_path);
+    	int best_dist = greedy_path_dist(current_path, 0);
     	
     	// copy current_path to the device
     	int* device_current_path = opts_paths + NUM_OPTS * (NUM_CITIES + 1);
@@ -254,7 +260,10 @@ int main(void)
   	);
   	
   	// Call the control thread
-  	cuda_opt2<<<1, 1>>>(opts_paths, device_current_path, device_best_dist);
+  	cuda_opt2<<<1, 1>>>(opts_paths, device_current_path, device_best_dist, 0);
+	
+	// Wait for the GPU to finish
+  	cudaDeviceSynchronize();
   	
   	// device_best_dist now contains the best distance found
   	// device_current_path contains the best path
@@ -273,7 +282,7 @@ int main(void)
   	cudaFree(opts_paths);
   	
   	size_t i;
-  	printf("Best Distance: %d\n", best_distance);
+  	printf("Best Distance: %d\n", best_dist);
   	puts("Path: ");
   	
   	for (i=0; i<NUM_CITIES; ++i)
