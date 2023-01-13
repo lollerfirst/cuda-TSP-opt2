@@ -1,5 +1,6 @@
 #include <time.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <stdbool.h>
 
 #define NUM_CITIES 10
@@ -225,11 +226,20 @@ int main(void)
 	// Build the data structure
 	build_cities();
 
+	// Errors
+	cudaError_t err_code;
+
 	// Copy cities from host to device, cities is costant
-	cudaMemcpyToSymbol(device_cities,
+	err_code = cudaMemcpyToSymbol(device_cities,
 		cities,
 		sizeof(int) * (NUM_CITIES * NUM_CITIES)
 	);
+
+	if (err_code)
+	{
+		printf("[!] Cuda Error: %s\n", cudaGetErrorName(err_code));
+		return -1;
+	}
 	
 	// contigous memory where different calculated paths will be stored
 	int* opts_paths;
@@ -244,40 +254,68 @@ int main(void)
     	int best_dist = greedy_path_dist(current_path, 0);
     	
     	// copy current_path to the device
-    	int* device_current_path = opts_paths + NUM_OPTS * (NUM_CITIES + 1);
-    	cudaMemcpy(device_current_path,
+    	int* device_current_path = opts_paths + sizeof(int) * NUM_OPTS * NUM_CITIES;
+    	err_code = cudaMemcpy(device_current_path,
     		current_path,
     		sizeof(int) * (NUM_CITIES),
     		cudaMemcpyHostToDevice
-    	); 
-    	
+    	);
+
+	if (err_code)
+        {
+                printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+                return -1;
+        }
+
     	// allocate memory for device_best_dist
-	int* device_best_dist = opts_paths + (NUM_OPTS + 1) * (NUM_CITIES);
-  	cudaMemcpy(device_best_dist,
+	int* device_best_dist = opts_paths + sizeof(int) * (NUM_OPTS + 1) * (NUM_CITIES);
+  	err_code = cudaMemcpy(device_best_dist,
   		&best_dist,
   		sizeof(int),
   		cudaMemcpyHostToDevice
   	);
+
+	if (err_code)
+        {
+                printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+                return -1;
+        }
+
   	
   	// Call the control thread
-  	cuda_opt2<<<1, 1>>>(opts_paths, device_current_path, device_best_dist, 0);
+  	cuda_opt2<<<1, 1>>>(opts_paths, device_current_path, device_best_dist, 0);        
+
 	
 	// Wait for the GPU to finish
   	cudaDeviceSynchronize();
   	
   	// device_best_dist now contains the best distance found
   	// device_current_path contains the best path
-  	cudaMemcpy(&best_dist,
+  	err_code = cudaMemcpy(&best_dist,
   		device_best_dist,
   		sizeof(int),
   		cudaMemcpyDeviceToHost
   	);
+
+	if (err_code)
+        {
+                printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+                return -1;
+        }
+
   	
   	cudaMemcpy(current_path,
   		device_current_path,
   		sizeof(int) * (NUM_CITIES),
   		cudaMemcpyDeviceToHost
   	);
+
+	if (err_code)
+        {
+                printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+                return -1;
+        }
+
   	
   	cudaFree(opts_paths);
   	
@@ -292,3 +330,4 @@ int main(void)
   	 	 	
   	return 0;
 }
+
