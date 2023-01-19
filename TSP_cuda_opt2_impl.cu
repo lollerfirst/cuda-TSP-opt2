@@ -127,8 +127,8 @@ __inline__ __device__ void unlock(int* mutex)
 }
 
 // Worker threads
-__global__ void cuda_calculate_opts(
-	int* current_path,
+__global__ void cuda_calculate_opts(int* current_path,
+	int* output_path,
 	int initial_idx)
 {
 
@@ -149,6 +149,7 @@ __global__ void cuda_calculate_opts(
 	
 	while (tid / accumulator > 0)
 	{
+		
 		++swap_b;
 		
 		if (swap_b >= NUM_CITIES - 2)
@@ -159,6 +160,9 @@ __global__ void cuda_calculate_opts(
 		range = accumulator;
 		accumulator += (NUM_CITIES - 2) - swap_b;
 	}
+	
+	// Swarm-scoped branching causes a mess without it
+	__syncthreads();
 	
 
 	int swap_bin[2];
@@ -175,6 +179,7 @@ __global__ void cuda_calculate_opts(
 	
 	
 	// Recalculate distance
+	// Maybe substitution with another kernel launch?
 	for (i=0; i<NUM_CITIES; ++i)
 	{
 		if (i == swap_b)
@@ -192,43 +197,45 @@ __global__ void cuda_calculate_opts(
 			distance += device_cities[(previous_idx*NUM_CITIES) + current_path[i]];
 			previous_idx = current_path[i];
 		}
-		
 	}
 
 	// Inter block thread synchronization i came up with
 	inter_block_sync(&sync_var);
-	
+	__syncthreads();
 
 	// Acquire the lock
 	while (trylock(&lock) == false);
 	
-	if (distance >= current_path[NUM_CITIES])
+	if (distance < current_path[NUM_CITIES])
 	{
-		unlock(&lock);
-		return;
-	}
+		output_path[NUM_CITIES] = distance;
 	
-	current_path[NUM_CITIES] = distance;
-	
-	// Adjust current path
-	current_path[swap_a] = swap_bin[1];
-	current_path[swap_b] = swap_bin[0];	
+		// Maybe substitution with another kernel launch?
+		for (int j=0; j<NUM_CITIES; ++j)
+		{
+			output_path[j] = current_path[j];
+		}
+
+		output_path[swap_a] = swap_bin[1];
+		output_path[swap_b] = swap_bin[0];
+	}	
 	
 	// Release the lock
 	unlock(&lock);
+	__syncthreads();
 	
 	return;
 }
 
 // Control thread
-__global__ void cuda_opt2(int* memory_block, int num_blocks, int initial_idx)
+__global__ void cuda_opt2(int* current_path, int* output_path, int num_blocks, int initial_idx)
 {
 	
 	int old_best_dist;
 	int new_best_dist;
 	do
 	{
-		old_best_dist = *(memory_block + NUM_CITIES);
+		old_best_dist = *(current_path + NUM_CITIES);
 		
 		// Sort out sync vars initialization
 		lock = 0;
@@ -236,7 +243,8 @@ __global__ void cuda_opt2(int* memory_block, int num_blocks, int initial_idx)
 			
 		// Dynamic Parallelism CUDA 5.0+
 		cuda_calculate_opts<<<num_blocks, BLOCK_SIZE>>>(
-			memory_block,
+			current_path,
+			output_path,
 			initial_idx
 		);
 		
@@ -249,7 +257,15 @@ __global__ void cuda_opt2(int* memory_block, int num_blocks, int initial_idx)
 			return;
 		}
 		
-		new_best_dist = *(memory_block + NUM_CITIES);
+		new_best_dist = *(output_path + NUM_CITIES);
+		
+		// switch-up pointers for the next iteration
+		// because the output path becomes the current_path in case
+		// there is another iteration
+		
+		int* temp = current_path;
+		current_path = output_path;
+		output_path = temp;
 	}
 	while (new_best_dist < old_best_dist);
 	
@@ -282,7 +298,11 @@ int main(void)
 	int* memory_block;
 	
 	// Calculate the length of a unit
-	size_t memory_block_size = sizeof(int) * NUM_CITIES + sizeof(int);
+	size_t aligned_unit_size = sizeof(int) * NUM_CITIES + sizeof(int);
+	aligned_unit_size = ((aligned_unit_size / MEM_ALIGNMENT) + 1) * MEM_ALIGNMENT;
+	
+	// Calculate memory block size
+	size_t memory_block_size = aligned_unit_size * 2;
 
 	// Allocate memory
 	cudaMalloc((void**) &memory_block,
@@ -324,10 +344,23 @@ int main(void)
                 printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
                 return -1;
         }
+        
+        // Get output path ptr
+        int* output_path = (int*) (((uintptr_t) memory_block) + aligned_unit_size);
+        
+        // Avoid corner case in which the greedy path length is
+        // already the best possible, so no updates are performed
+        // thus the distance embedded in output_path would be random bytes
+        int corner_case_avoidance = best_dist+1;
+        
+        err_code = cudaMemcpy(output_path + NUM_CITIES,
+        	&corner_case_avoidance,
+        	sizeof(int),
+        	cudaMemcpyHostToDevice);
 
   	
   	// Call the control thread
-  	cuda_opt2<<<1, 1>>>(memory_block, num_blocks, 0);        
+  	cuda_opt2<<<1, 1>>>(memory_block, output_path, num_blocks, 0);        
 
 	
 	// Wait for the GPU to finish
@@ -340,6 +373,7 @@ int main(void)
                 return -1;
         }
         
+        // Get the 2 dists --> verify which is smaller
         
   	err_code = cudaMemcpy(&best_dist,
   		memory_block + NUM_CITIES,
@@ -352,11 +386,11 @@ int main(void)
                 printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
                 return -1;
         }
-
-  	
-  	cudaMemcpy(current_path,
-  		memory_block,
-  		sizeof(int) * (NUM_CITIES),
+        
+        int best_dist_alt;
+        err_code = cudaMemcpy(&best_dist_alt,
+  		output_path + NUM_CITIES,
+  		sizeof(int),
   		cudaMemcpyDeviceToHost
   	);
 
@@ -365,6 +399,37 @@ int main(void)
                 printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
                 return -1;
         }
+
+	// Copy only the path with the best dist
+  	if (best_dist < best_dist_alt)
+  	{
+	  	
+	  	cudaMemcpy(current_path,
+	  		memory_block,
+	  		sizeof(int) * (NUM_CITIES),
+	  		cudaMemcpyDeviceToHost
+	  	);
+
+		if (err_code)
+		{
+		        printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+		        return -1;
+		}
+	}
+	else
+	{
+		cudaMemcpy(current_path,
+	  		output_path,
+	  		sizeof(int) * (NUM_CITIES),
+	  		cudaMemcpyDeviceToHost
+	  	);
+
+		if (err_code)
+		{
+		        printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+		        return -1;
+		}
+	}
 
   	
   	cudaFree(memory_block);
