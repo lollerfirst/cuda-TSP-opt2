@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define NUM_CITIES 10
+#define NUM_CITIES 25
 #define MAX_DISTANCE 32767
 #define BLOCK_SIZE 256
 #define NUM_OPTS (((NUM_CITIES * (NUM_CITIES - 3)) / 2) + 1)
@@ -16,8 +16,8 @@ static int cities[NUM_CITIES * NUM_CITIES];
 // device data
 __constant__ int device_cities[NUM_CITIES * NUM_CITIES];
 
-__device__ int lock;		// Justification: have to be visible
-__device__ int sync_var;	// to all threads in a grid = only way
+__device__ __align__(32) int lock;	// Justification: have to be visible
+__device__ __align__(32) int sync_var;	// to all threads in a grid = only way
 
 // build the data structure on the host
 void build_cities(void)
@@ -161,14 +161,13 @@ __global__ void cuda_calculate_opts(int* current_path,
 		accumulator += (NUM_CITIES - 2) - swap_b;
 	}
 	
-	// Swarm-scoped branching causes a mess without it
-	__syncthreads();
+	// warp-scoped branching causes a mess without it
+	__syncwarp();
 	
 
 	int swap_bin[2];
 	
 	
-	size_t i;
 	int swap_a = swap_b + (tid % range) + 1;
 	int distance = 0;
 	int previous_idx = initial_idx;
@@ -180,28 +179,23 @@ __global__ void cuda_calculate_opts(int* current_path,
 	
 	// Recalculate distance
 	// Maybe substitution with another kernel launch?
-	for (i=0; i<NUM_CITIES; ++i)
+	for (int i=0; i<NUM_CITIES; ++i)
 	{
-		if (i == swap_b)
-		{
-			distance += device_cities[(previous_idx*NUM_CITIES) + swap_bin[0]];
-			previous_idx = swap_bin[0];
-		}
-		else if (i == swap_a)
-		{
-			distance += device_cities[(previous_idx*NUM_CITIES) + swap_bin[1]];
-			previous_idx = swap_bin[1];
-		}
-		else
-		{
-			distance += device_cities[(previous_idx*NUM_CITIES) + current_path[i]];
-			previous_idx = current_path[i];
-		}
+		// Avoid branching with these instructions
+		distance += device_cities[(previous_idx*NUM_CITIES) + current_path[i]]
+			* (i != swap_a && i != swap_b)
+			+ device_cities[(previous_idx*NUM_CITIES) + swap_bin[0]]
+			* (i == swap_b)
+			+ device_cities[(previous_idx*NUM_CITIES) + swap_bin[1]]
+			* (i == swap_a);
+			
+		previous_idx = current_path[i] * (i != swap_a && i != swap_b)
+			+ swap_bin[0] * (i == swap_b)
+			+ swap_bin[1] * (i == swap_a);
 	}
 
 	// Inter block thread synchronization i came up with
 	inter_block_sync(&sync_var);
-	__syncthreads();
 
 	// Acquire the lock
 	while (trylock(&lock) == false);
@@ -209,6 +203,7 @@ __global__ void cuda_calculate_opts(int* current_path,
 	if (distance < current_path[NUM_CITIES])
 	{
 		output_path[NUM_CITIES] = distance;
+		current_path[NUM_CITIES] = distance;
 	
 		// Maybe substitution with another kernel launch?
 		for (int j=0; j<NUM_CITIES; ++j)
@@ -222,7 +217,7 @@ __global__ void cuda_calculate_opts(int* current_path,
 	
 	// Release the lock
 	unlock(&lock);
-	__syncthreads();
+	__syncwarp();
 	
 	return;
 }
@@ -233,9 +228,12 @@ __global__ void cuda_opt2(int* current_path, int* output_path, int num_blocks, i
 	
 	int old_best_dist;
 	int new_best_dist;
+	int final_mask = 0x80000000;
+	
 	do
 	{
 		old_best_dist = *(current_path + NUM_CITIES);
+		final_mask ^= 0x80000000;
 		
 		// Sort out sync vars initialization
 		lock = 0;
@@ -269,6 +267,9 @@ __global__ void cuda_opt2(int* current_path, int* output_path, int num_blocks, i
 	}
 	while (new_best_dist < old_best_dist);
 	
+	// Embed an initial 1 bit if the best path is on the second unit
+	current_path[NUM_CITIES] |= final_mask;
+	return;
 }
 
 
@@ -297,7 +298,7 @@ int main(void)
 
 	int* memory_block;
 	
-	// Calculate the length of a unit
+	// Calculate the length of a unit: 1 path + 1 total_distance
 	size_t aligned_unit_size = sizeof(int) * NUM_CITIES + sizeof(int);
 	aligned_unit_size = ((aligned_unit_size / MEM_ALIGNMENT) + 1) * MEM_ALIGNMENT;
 	
@@ -320,6 +321,14 @@ int main(void)
     	int current_path[NUM_CITIES];
     	int best_dist = greedy_path_dist(current_path, 0);
     	
+    	printf("Greedy best Distance: %d\n", best_dist);
+  	puts("Greedy path: ");
+  	
+  	for (int i=0; i<NUM_CITIES; ++i)
+  	{
+  		printf("%d\t", current_path[i]);
+  	}
+  	printf("\n");
     	
     	err_code = cudaMemcpy(memory_block,
     		current_path,
@@ -347,21 +356,11 @@ int main(void)
         
         // Get output path ptr
         int* output_path = (int*) (((uintptr_t) memory_block) + aligned_unit_size);
-        
-        // Avoid corner case in which the greedy path length is
-        // already the best possible, so no updates are performed
-        // thus the distance embedded in output_path would be random bytes
-        int corner_case_avoidance = best_dist+1;
-        
-        err_code = cudaMemcpy(output_path + NUM_CITIES,
-        	&corner_case_avoidance,
-        	sizeof(int),
-        	cudaMemcpyHostToDevice);
 
   	
   	// Call the control thread
   	cuda_opt2<<<1, 1>>>(memory_block, output_path, num_blocks, 0);        
-
+	
 	
 	// Wait for the GPU to finish
   	cudaDeviceSynchronize();
@@ -373,8 +372,7 @@ int main(void)
                 return -1;
         }
         
-        // Get the 2 dists --> verify which is smaller
-        
+        // Copy best distance from GPU
   	err_code = cudaMemcpy(&best_dist,
   		memory_block + NUM_CITIES,
   		sizeof(int),
@@ -387,21 +385,10 @@ int main(void)
                 return -1;
         }
         
-        int best_dist_alt;
-        err_code = cudaMemcpy(&best_dist_alt,
-  		output_path + NUM_CITIES,
-  		sizeof(int),
-  		cudaMemcpyDeviceToHost
-  	);
 
-	if (err_code)
-        {
-                printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
-                return -1;
-        }
-
-	// Copy only the path with the best dist
-  	if (best_dist < best_dist_alt)
+	// Extract the first bit of best distance to understand which unit
+	// contains the best path
+  	if (!(best_dist & 0x80000000))
   	{
 	  	
 	  	cudaMemcpy(current_path,
@@ -429,20 +416,20 @@ int main(void)
 		        printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
 		        return -1;
 		}
+		
+		best_dist &= 0x7FFFFFFF;
 	}
+  	
 
-  	
-  	cudaFree(memory_block);
-  	
-  	size_t i;
   	printf("Best Distance: %d\n", best_dist);
   	puts("Path: ");
   	
-  	for (i=0; i<NUM_CITIES; ++i)
+  	for (int i=0; i<NUM_CITIES; ++i)
   	{
   		printf("%d\t", current_path[i]);
   	}
-  	 	 	
+  	printf("\n");
+  	
+  	cudaFree(memory_block);
   	return 0;
 }
-
