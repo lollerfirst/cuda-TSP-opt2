@@ -251,50 +251,51 @@ __global__ void cuda_opt2(int* memory_block, int initial_idx)
 	
 	int best_index = -1;
 	
-	while (new_best_dist < old_best_dist) 
+	switch (best_index)
 	{
-		// THIS SWITCH CUTS OFF THE UNNECESSARY COPY KERNEL CALL AT THE BEGINNING
-		switch (best_index)
+		while (new_best_dist < old_best_dist) 
 		{
-		default:
-			// Copy best path and distance to current path
-			copy<<<num_blocks_copy, BLOCK_SIZE>>>(
-				memory_block,
-				&memory_block[(ALIGNED_UNIT_SIZE/sizeof(int)) * best_index],
-				ALIGNED_UNIT_SIZE / sizeof(int)
-			);
+			// THIS SWITCH CUTS OFF THE UNNECESSARY COPY KERNEL CALL AT THE BEGINNING
 			
-			// Wait for child grid to terminate
-			cudaDeviceSynchronize();
-		
-		case -1:
+			default:
+				// Copy best path and distance to current path
+				copy<<<num_blocks_copy, BLOCK_SIZE>>>(
+					memory_block,
+					&memory_block[(ALIGNED_UNIT_SIZE/sizeof(int)) * best_index],
+					ALIGNED_UNIT_SIZE / sizeof(int)
+				);
+				
+				// Wait for child grid to terminate
+				cudaDeviceSynchronize();
 			
-			// save previous calculated distance
-			old_best_dist = new_best_dist;
+			case -1:
+				
+				// save previous calculated distance
+				old_best_dist = new_best_dist;
 
-			// Launch kernel that computes paths and distances
-			cuda_calculate_opts<<<num_blocks, BLOCK_SIZE>>>(
-				memory_block,
-				switched_pointers,
-				initial_idx
-			);
+				// Launch kernel that computes paths and distances
+				cuda_calculate_opts<<<num_blocks, BLOCK_SIZE>>>(
+					memory_block,
+					switched_pointers,
+					initial_idx
+				);
 
-			// Wait for child grid to terminate
-			cudaDeviceSynchronize();
+				// Wait for child grid to terminate
+				cudaDeviceSynchronize();
 
-			cudaError_t err_code = cudaGetLastError();
-			if (err_code)
-			{
-				return;
-			}
+				cudaError_t err_code = cudaGetLastError();
+				if (err_code)
+				{
+					return;
+				}
 
-			// retrieve best calculated distance amongst various blocks
-			for (int i=1; i<num_blocks+1; ++i)
-			{
-				int calc_distance = memory_block[(ALIGNED_UNIT_SIZE/sizeof(int)) * i + NUM_CITIES];
-				new_best_dist = (calc_distance < new_best_dist) ? calc_distance : new_best_dist;
-				best_index = (calc_distance < new_best_dist) ? i : best_index; 
-			}
+				// retrieve best calculated distance amongst various blocks
+				for (int i=1; i<num_blocks+1; ++i)
+				{
+					int calc_distance = memory_block[(ALIGNED_UNIT_SIZE/sizeof(int)) * i + NUM_CITIES];
+					new_best_dist = (calc_distance < new_best_dist) ? calc_distance : new_best_dist;
+					best_index = (calc_distance < new_best_dist) ? i : best_index; 
+				}
 		}
 	}
 
