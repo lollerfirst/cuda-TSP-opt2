@@ -224,7 +224,7 @@ __global__ void cuda_calculate_opts(int* memory_block,
 	{
 		output_path[NUM_CITIES] = distance;
 	
-		constexpr int num_blocks_copy = (NUM_CITIES + BLOCK_SIZE + 1) / BLOCK_SIZE;
+		const int num_blocks_copy = (NUM_CITIES + BLOCK_SIZE + 1) / BLOCK_SIZE;
 		copy<<<num_blocks_copy, BLOCK_SIZE>>>(output_path, current_path, NUM_CITIES);
 		
 		output_path[swap_a] = swap_bin[1];
@@ -242,8 +242,8 @@ __global__ void cuda_calculate_opts(int* memory_block,
 __global__ void cuda_opt2(int* memory_block, int initial_idx)
 {
 
-	constexpr int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
-	constexpr int num_blocks_copy = ((ALIGNED_UNIT_SIZE/sizeof(int)) + BLOCK_SIZE + 1) / BLOCK_SIZE;
+	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	const int num_blocks_copy = ((ALIGNED_UNIT_SIZE/sizeof(int)) + BLOCK_SIZE + 1) / BLOCK_SIZE;
 	
 	int new_best_dist = memory_block[NUM_CITIES];
 	int old_best_dist = new_best_dist + 1;
@@ -325,7 +325,7 @@ int main(void)
 	}
 
 	// Calculate number of blocks necessary
-	constexpr int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
 	int* memory_block;
 
