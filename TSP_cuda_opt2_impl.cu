@@ -28,8 +28,8 @@ __inline__ __host__ __device__ int triu_index(const int i, const int j)
 	const int sub_value_i = side_i*(side_i+1)/2;
 	const int sub_value_j = side_j*(side_j+1)/2;
 
-	return ((BUFFER_LEN - sub_value_i) + j - i - 1 * (i < j)) +
-		((BUFFER_LEN - sub_value_j) + i - j - 1 * (j < i));
+	return (((BUFFER_LEN - sub_value_i) + j - i - 1)* (i < j)) +
+		(((BUFFER_LEN - sub_value_j) + i - j - 1) * (j < i));
 }
 
 // build the data structure on the host
