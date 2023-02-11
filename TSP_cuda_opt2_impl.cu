@@ -8,7 +8,7 @@
 #define NUM_CITIES 25
 #define MAX_DISTANCE 32767
 #define MEM_ALIGNMENT 32
-#define BLOCK_SIZE 512
+#define BLOCK_SIZE 256
 
 #define BUFFER_LEN ((NUM_CITIES * (NUM_CITIES - 1)) / 2)
 #define ALIGNED_UNIT_SIZE ((((sizeof(int) * NUM_CITIES + sizeof(int)) / MEM_ALIGNMENT) + 1) * MEM_ALIGNMENT)
@@ -133,7 +133,6 @@ __global__ void copy(TYPE* dest, const TYPE* src, size_t count)
 
 // Worker threads
 __global__ void cuda_calculate_opts(int* memory_block,
-	bool switched_pointers,
 	int initial_idx)
 {
 
@@ -224,7 +223,7 @@ __global__ void cuda_calculate_opts(int* memory_block,
 	{
 		output_path[NUM_CITIES] = distance;
 	
-		const int num_blocks_copy = (NUM_CITIES + BLOCK_SIZE + 1) / BLOCK_SIZE;
+		const int num_blocks_copy = (NUM_CITIES + BLOCK_SIZE - 1) / BLOCK_SIZE;
 		copy<<<num_blocks_copy, BLOCK_SIZE>>>(output_path, current_path, NUM_CITIES);
 		
 		output_path[swap_a] = swap_bin[1];
@@ -243,12 +242,10 @@ __global__ void cuda_opt2(int* memory_block, int initial_idx)
 {
 
 	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
-	const int num_blocks_copy = ((ALIGNED_UNIT_SIZE/sizeof(int)) + BLOCK_SIZE + 1) / BLOCK_SIZE;
+	const int num_blocks_copy = ((ALIGNED_UNIT_SIZE/sizeof(int)) + BLOCK_SIZE - 1) / BLOCK_SIZE;
 	
 	int new_best_dist = memory_block[NUM_CITIES];
 	int old_best_dist = new_best_dist + 1;
-	bool switched_pointers = false;
-	
 	int best_index = -1;
 	
 	switch (best_index)
@@ -276,7 +273,6 @@ __global__ void cuda_opt2(int* memory_block, int initial_idx)
 				// Launch kernel that computes paths and distances
 				cuda_calculate_opts<<<num_blocks, BLOCK_SIZE>>>(
 					memory_block,
-					switched_pointers,
 					initial_idx
 				);
 
@@ -293,8 +289,11 @@ __global__ void cuda_opt2(int* memory_block, int initial_idx)
 				for (int i=1; i<num_blocks+1; ++i)
 				{
 					int calc_distance = memory_block[(ALIGNED_UNIT_SIZE/sizeof(int)) * i + NUM_CITIES];
-					new_best_dist = (calc_distance < new_best_dist) ? calc_distance : new_best_dist;
-					best_index = (calc_distance < new_best_dist) ? i : best_index; 
+					if (calc_distance < new_best_dist)
+					{
+						new_best_dist = calc_distance;
+						best_index = i; 
+					}
 				}
 		}
 	}
