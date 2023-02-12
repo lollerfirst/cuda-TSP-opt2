@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <cuda_profiler_api.h>
 
-#define NUM_CITIES 25
+#define NUM_CITIES 100
 #define MAX_DISTANCE 32767
 #define MEM_ALIGNMENT 32
 #define BLOCK_SIZE 256
@@ -213,6 +213,9 @@ __global__ void cuda_calculate_opts(int* memory_block,
 		* (swap_a - 1 != swap_b);
 	distance += device_cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
 	
+	// initialize calculated distance with 0 ~~ default value/not improved
+	output_path[NUM_CITIES] = 0;
+
 	// Block-wide sync
 	__syncthreads();
 
@@ -225,6 +228,7 @@ __global__ void cuda_calculate_opts(int* memory_block,
 	
 		const int num_blocks_copy = (NUM_CITIES + BLOCK_SIZE - 1) / BLOCK_SIZE;
 		copy<<<num_blocks_copy, BLOCK_SIZE>>>(output_path, current_path, NUM_CITIES);
+		cudaDeviceSynchronize();
 		
 		output_path[swap_a] = swap_bin[1];
 		output_path[swap_b] = swap_bin[0];
@@ -289,7 +293,7 @@ __global__ void cuda_opt2(int* memory_block, int initial_idx)
 				for (int i=1; i<num_blocks+1; ++i)
 				{
 					int calc_distance = memory_block[(ALIGNED_UNIT_SIZE/sizeof(int)) * i + NUM_CITIES];
-					if (calc_distance < new_best_dist)
+					if (calc_distance > 0 && calc_distance < new_best_dist)
 					{
 						new_best_dist = calc_distance;
 						best_index = i; 
