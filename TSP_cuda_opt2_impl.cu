@@ -22,11 +22,19 @@ __inline__ __host__ __device__ int triu_index(const int i, const int j)
 {
 	const int side_i = NUM_CITIES - (i+1);
 	const int side_j = NUM_CITIES - (j+1);
-	const int sub_value_i = side_i*(side_i+1)/2;
-	const int sub_value_j = side_j*(side_j+1)/2;
+	const int sub_area_i = side_i*(side_i+1)/2;
+	const int sub_area_j = side_j*(side_j+1)/2;
 
-	return (((BUFFER_LEN - sub_value_i) + j - i - 1)* (i < j)) +
-		(((BUFFER_LEN - sub_value_j) + i - j - 1) * (j < i));
+	return (((BUFFER_LEN - sub_area_i) + j - i - 1)* (i < j)) +
+		(((BUFFER_LEN - sub_area_j) + i - j - 1) * (j < i));
+}
+
+// find greatest swap_a such that f(swap_a) <= index, with f(n) = n*(n+1)/2
+// find swap_b as f(swap_a) - index - 1
+__inline__ __device__ void calculate_swap_indices(int* swap_b, int* swap_a, const int index)
+{
+	*swap_a = static_cast<int>(floorf((1.0f + sqrtf(static_cast<float>(1+8*index))) / 2.0f));
+	*swap_b = ((swap_a[0] * (swap_a[0] + 1)) / 2) - index - 1;
 }
 
 // build the data structure on the host
@@ -151,32 +159,11 @@ __global__ void cuda_calculate_opts(const int* device_cities,
 	int* output_path = memory_block + (ALIGNED_UNIT_SIZE / sizeof(int)) * (blockIdx.x + 1);
 	
 	// ENUMERATION OF OPTS:
-	int swap_b = 0;
-	int accumulator = NUM_CITIES - 2;
-	int range = accumulator;
-	
-	while (tid / accumulator > 0)
-	{
-		
-		++swap_b;
-		
-		if (swap_b >= NUM_CITIES - 2)
-		{
-			return;
-		}
-		
-		range = accumulator;
-		accumulator += (NUM_CITIES - 2) - swap_b;
-	}
-	
-	// warp-scoped branching causes a mess without it
-	__syncwarp();
+	int swap_a, swap_b;
+	calculate_swap_indices(&swap_b, &swap_a, tid);
 	
 
 	int swap_bin[2];
-	
-	
-	int swap_a = swap_b + (tid % range) + 1;
 	int distance = current_path[NUM_CITIES];
 	
 	// Load only the nodes to swap
