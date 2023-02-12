@@ -17,9 +17,6 @@
 // Distance matrix represented in compressed form
 static int cities[BUFFER_LEN];
 
-// device data
-__shared__ int device_cities[BUFFER_LEN];
-
 // indexes the compressed sparse matrix holding the distances
 __inline__ __host__ __device__ int triu_index(const int i, const int j)
 {
@@ -132,7 +129,8 @@ __global__ void copy(TYPE* dest, const TYPE* src, size_t count)
 }
 
 // Worker threads
-__global__ void cuda_calculate_opts(int* memory_block,
+__global__ void cuda_calculate_opts(const int* device_cities,
+	int* memory_block,
 	int initial_idx)
 {
 
@@ -242,7 +240,7 @@ __global__ void cuda_calculate_opts(int* memory_block,
 }
 
 // Control thread
-__global__ void cuda_opt2(int* memory_block, int initial_idx)
+__global__ void cuda_opt2(const int* device_cities, int* memory_block, int initial_idx)
 {
 
 	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -276,6 +274,7 @@ __global__ void cuda_opt2(int* memory_block, int initial_idx)
 
 				// Launch kernel that computes paths and distances
 				cuda_calculate_opts<<<num_blocks, BLOCK_SIZE>>>(
+					device_cities,
 					memory_block,
 					initial_idx
 				);
@@ -309,16 +308,28 @@ __global__ void cuda_opt2(int* memory_block, int initial_idx)
 
 int main(void)
 {
+	int* device_cities;
+
 	// Build the data structure
 	build_cities(1);
 
 	// Errors
 	cudaError_t err_code;
 
+	// Allocate device cities
+	err_code = cudaMalloc(&device_cities, BUFFER_LEN * sizeof(int));
+
+	if (err_code)
+	{
+		printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+		return -1;
+	}
+
 	// Copy cities from host to device, cities is costant
-	err_code = cudaMemcpyToSymbol(device_cities,
+	err_code = cudaMemcpy(device_cities,
 		cities,
-		sizeof(int) * (BUFFER_LEN)
+		sizeof(int) * (BUFFER_LEN),
+		cudaMemcpyHostToDevice
 	);
 
 	if (err_code)
@@ -390,7 +401,7 @@ int main(void)
     	cudaProfilerStart();
 
   	// Call the control thread
-  	cuda_opt2<<<1, 1>>>(memory_block, 0);        
+  	cuda_opt2<<<1, 1>>>(device_cities, memory_block, 0);        
 	
 	// Wait for the GPU to finish
   	cudaDeviceSynchronize();
