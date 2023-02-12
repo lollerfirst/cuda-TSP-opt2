@@ -5,10 +5,10 @@
 #include <stdint.h>
 #include <cuda_profiler_api.h>
 
-#define NUM_CITIES 100
+#define NUM_CITIES 1000
 #define MAX_DISTANCE 32767
 #define MEM_ALIGNMENT 32
-#define BLOCK_SIZE 256
+#define BLOCK_SIZE 1024
 
 #define BUFFER_LEN ((NUM_CITIES * (NUM_CITIES - 1)) / 2)
 #define ALIGNED_UNIT_SIZE ((((sizeof(int) * NUM_CITIES + sizeof(int)) / MEM_ALIGNMENT) + 1) * MEM_ALIGNMENT)
@@ -347,12 +347,12 @@ int main(void)
 		return -1;
 	}
 
+
+	// initial path chosen with a greedy heuristic, stored in current_path
+	int current_path[NUM_CITIES];
+	int best_dist = greedy_path_dist(current_path, 0);
 	
-    	// initial path chosen with a greedy heuristic, stored in current_path
-    	int current_path[NUM_CITIES];
-    	int best_dist = greedy_path_dist(current_path, 0);
-    	
-    	printf("Greedy best Distance: %d\n", best_dist);
+	printf("Greedy best Distance: %d\n", best_dist);
   	puts("Greedy path: ");
   	
   	for (int i=0; i<NUM_CITIES; ++i)
@@ -361,11 +361,11 @@ int main(void)
   	}
   	printf("\n");
     	
-    	err_code = cudaMemcpy(memory_block,
-    		current_path,
-    		sizeof(int) * NUM_CITIES,
-    		cudaMemcpyHostToDevice
-    	);
+	err_code = cudaMemcpy(memory_block,
+		current_path,
+		sizeof(int) * NUM_CITIES,
+		cudaMemcpyHostToDevice
+	);
     	
     	if (err_code)
 	{
