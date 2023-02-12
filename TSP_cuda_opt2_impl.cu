@@ -18,7 +18,7 @@
 static int cities[BUFFER_LEN];
 
 // device data
-__constant__ int device_cities[BUFFER_LEN];
+__shared__ int device_cities[BUFFER_LEN];
 
 // indexes the compressed sparse matrix holding the distances
 __inline__ __host__ __device__ int triu_index(const int i, const int j)
