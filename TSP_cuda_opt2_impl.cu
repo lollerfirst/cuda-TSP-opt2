@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <cuda_profiler_api.h>
 
-#define NUM_CITIES 1000
+#define NUM_CITIES 10000
 #define MAX_DISTANCE 32767
 #define MEM_ALIGNMENT 32
 #define BLOCK_SIZE 1024
@@ -309,6 +309,7 @@ __global__ void cuda_opt2(const int* device_cities, int* memory_block, int initi
 int main(void)
 {
 	int* device_cities;
+	struct timespec begin, end;
 
 	// Build the data structure
 	build_cities(1);
@@ -397,8 +398,7 @@ int main(void)
         }
         
 
-  	// Start the profiler
-    	cudaProfilerStart();
+	clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
 
   	// Call the control thread
   	cuda_opt2<<<1, 1>>>(device_cities, memory_block, 0);        
@@ -406,9 +406,9 @@ int main(void)
 	// Wait for the GPU to finish
   	cudaDeviceSynchronize();
 
-    	// Stop the profiler
-    	cudaProfilerStop();
-    
+	clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+
+
   	err_code = cudaGetLastError();
   	
   	if (err_code)
@@ -417,7 +417,12 @@ int main(void)
                 return -1;
         }
         
-        // Copy best distance from GPU into best_dist
+
+	fprintf (stderr, "Total GPU time = %.9f seconds\n",
+            (end.tv_nsec - begin.tv_nsec) / 1000000000.0 +
+            (end.tv_sec  - begin.tv_sec));
+
+    // Copy best distance from GPU into best_dist
   	err_code = cudaMemcpy(&best_dist,
   		memory_block + NUM_CITIES,
   		sizeof(int),
