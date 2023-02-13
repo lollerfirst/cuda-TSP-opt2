@@ -112,7 +112,7 @@ void opt2(int* current_path, int* output_path, const int initial_idx)
     int new_best_distance, old_best_distance;
     new_best_distance = current_path[NUM_CITIES];
     old_best_distance = new_best_distance+1;
-    int final_mask = 0x00000000;
+    int final_mask = 0x80000000;
 
 
     while (new_best_distance < old_best_distance)
@@ -120,14 +120,13 @@ void opt2(int* current_path, int* output_path, const int initial_idx)
         final_mask ^= 0x80000000;
         old_best_distance = new_best_distance;
         output_path[NUM_CITIES] = 0;
-        
-        int i;
 
         #pragma omp parallel for
-        for (i=0; i<NUM_OPTS; ++i)
+        for (int i=0; i<NUM_OPTS; ++i)
         {
             int swap_a, swap_b;
 	        calculate_swap_indices(swap_b, swap_a, i);
+            //fprintf(stderr, "i = %d, a = %d, b = %d\n", i, swap_a, swap_b);
 
             int swap_bin[2];
 	        int distance = current_path[NUM_CITIES];
@@ -170,12 +169,14 @@ void opt2(int* current_path, int* output_path, const int initial_idx)
                 {
                     output_path[NUM_CITIES] = distance;
 
-                    memcpy(output_path, current_path, NUM_CITIES);
+                    memcpy(output_path, current_path, NUM_CITIES*sizeof(int));
                     output_path[swap_b] = swap_bin[0];
                     output_path[swap_a] = swap_bin[1];
                 }
             }
         }
+
+        #pragma omp barrier
 
         new_best_distance = (output_path[NUM_CITIES] > 0) ? output_path[NUM_CITIES] : new_best_distance;
         int* temp = current_path;
