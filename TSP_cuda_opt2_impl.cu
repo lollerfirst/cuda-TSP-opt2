@@ -228,7 +228,7 @@ __global__ void cuda_calculate_opts(int* device_cities,
 }
 
 // Control thread
-__global__ void cuda_opt2(const int* device_cities, int* memory_block, int initial_idx)
+__global__ void cuda_opt2(int* device_cities, int* memory_block, int initial_idx)
 {
 
 	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
