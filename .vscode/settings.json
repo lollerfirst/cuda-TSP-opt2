@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "ctime": "cpp",
-        "chrono": "cpp"
+        "chrono": "cpp",
+        "iterator": "cpp"
     }
 }

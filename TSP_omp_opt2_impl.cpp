@@ -113,17 +113,17 @@ void opt2(int* current_path, int* output_path, const int initial_idx)
     new_best_distance = current_path[NUM_CITIES];
     old_best_distance = new_best_distance+1;
     int final_mask = 0x00000000;
-    
-    std::mutex mut{};
+
 
     while (new_best_distance < old_best_distance)
     {
         final_mask ^= 0x80000000;
         old_best_distance = new_best_distance;
+        output_path[NUM_CITIES] = 0;
         
         int i;
 
-        #pragma parallel for shared(mut) private(i)
+        #pragma omp parallel for
         for (i=0; i<NUM_OPTS; ++i)
         {
             int swap_a, swap_b;
@@ -161,20 +161,20 @@ void opt2(int* current_path, int* output_path, const int initial_idx)
                 * (swap_a - 1 != swap_b);
             distance += cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
 
-            #pragma omp barrier
-
-            mut.lock();
-            if (distance < current_path[NUM_CITIES])
+            #pragma omp critical
             {
-                output_path[NUM_CITIES] = current_path[NUM_CITIES] = distance;
+                // check if the calculated distance is better than the previously calculated one
+                // and better of any other threads' of this iteration
+                if (distance < current_path[NUM_CITIES] &&
+                    (output_path[NUM_CITIES] == 0 || distance < output_path[NUM_CITIES]))
+                {
+                    output_path[NUM_CITIES] = distance;
 
-                memcpy(output_path, current_path, NUM_CITIES);
-                output_path[swap_b] = swap_bin[0];
-                output_path[swap_a] = swap_bin[1];
+                    memcpy(output_path, current_path, NUM_CITIES);
+                    output_path[swap_b] = swap_bin[0];
+                    output_path[swap_a] = swap_bin[1];
+                }
             }
-            mut.unlock();
-
-            #pragma omp barrier
         }
 
         new_best_distance = output_path[NUM_CITIES];

@@ -137,7 +137,7 @@ __global__ void copy(TYPE* dest, const TYPE* src, size_t count)
 }
 
 // Worker threads
-__global__ void cuda_calculate_opts(const int* device_cities,
+__global__ void cuda_calculate_opts(int* device_cities,
 	int* memory_block,
 	int initial_idx)
 {
@@ -207,7 +207,8 @@ __global__ void cuda_calculate_opts(const int* device_cities,
 	// Acquire the lock
 	while (trylock(&lock) == false);
 	
-	if (distance < current_path[NUM_CITIES])
+	if (distance < current_path[NUM_CITIES] &&
+		(output_path[NUM_CITIES] == 0 || distance < output_path[NUM_CITIES]))
 	{
 		output_path[NUM_CITIES] = distance;
 	
