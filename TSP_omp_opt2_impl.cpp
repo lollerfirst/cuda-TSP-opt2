@@ -32,7 +32,7 @@ inline int triu_index(const int i, const int j)
 
 inline void calculate_swap_indices(int& swap_b, int& swap_a, const int index)
 {
-	swap_a = static_cast<std::size_t>((1.0f + sqrt(static_cast<double>(1+8*index))) / 2.0f);
+	swap_a = static_cast<int>((1.0f + sqrt(static_cast<double>(1+8*index))) / 2.0f);
 	swap_b = ((swap_a * (swap_a + 1)) / 2) - index - 1;
 }
 
@@ -114,7 +114,7 @@ void opt2(int* current_path, int* output_path, const int initial_idx)
     old_best_distance = new_best_distance+1;
     int final_mask = 0x00000000;
     
-    std::mutex mut;
+    std::mutex mut{};
 
     while (new_best_distance < old_best_distance)
     {
@@ -215,7 +215,7 @@ int main(void)
   	
   	for (std::size_t i=0; i<NUM_CITIES; ++i)
   	{
-  		std::cout << current_path[i] << "\t";
+  		std::cout << current_path[i] << "\n";
   	}
   	std::cout << "\n";
 
@@ -234,7 +234,7 @@ int main(void)
     std::cout << "Opt-2 best distance: " << distance << "\nOpt-2 path:\n";
     for (std::size_t i=0; i<NUM_CITIES; ++i)
     {
-        std::cout << selected[i] << "\t";
+        std::cout << selected[i] << "\n";
     }
     std::cout << "\n";
 
