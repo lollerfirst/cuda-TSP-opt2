@@ -177,7 +177,7 @@ void opt2(int* current_path, int* output_path, const int initial_idx)
             }
         }
 
-        new_best_distance = output_path[NUM_CITIES];
+        new_best_distance = (output_path[NUM_CITIES] > 0) ? output_path[NUM_CITIES] : new_best_distance;
         int* temp = current_path;
         current_path = output_path;
         output_path = temp;
