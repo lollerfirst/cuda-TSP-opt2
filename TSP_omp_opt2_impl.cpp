@@ -9,7 +9,9 @@
 #include <cerrno>
 #include <cstring>
 
+#ifndef MAX_THREADS
 #define MAX_THREADS 64
+#endif
 
 #define NUM_CITIES 10000
 #define MAX_DISTANCE 32767
