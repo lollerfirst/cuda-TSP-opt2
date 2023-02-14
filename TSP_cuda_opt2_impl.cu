@@ -9,7 +9,10 @@
 #define GENERATION_SEED 1
 #endif
 
-#define NUM_CITIES 10000
+#ifndef NUM_CITIES
+#define NUM_CITIES 100
+#endif
+
 #define MAX_DISTANCE 32767
 #define MEM_ALIGNMENT 32
 #define BLOCK_SIZE 1024

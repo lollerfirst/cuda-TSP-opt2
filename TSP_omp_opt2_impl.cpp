@@ -17,7 +17,10 @@
 #define MAX_THREADS 64
 #endif
 
-#define NUM_CITIES 10000
+#ifndef NUM_CITIES
+#define NUM_CITIES 100
+#endif
+
 #define MAX_DISTANCE 32767
 
 #define BUFFER_LEN ((NUM_CITIES * (NUM_CITIES - 1)) / 2)
