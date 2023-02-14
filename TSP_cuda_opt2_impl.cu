@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include <cuda_profiler_api.h>
 
+#ifndef GENERATION_SEED
+#define GENERATION_SEED 1
+#endif
+
 #define NUM_CITIES 10000
 #define MAX_DISTANCE 32767
 #define MEM_ALIGNMENT 32
@@ -300,7 +304,7 @@ int main(void)
 	struct timespec begin, end;
 
 	// Build the data structure
-	build_cities(1);
+	build_cities(GENERATION_SEED);
 
 	// Errors
 	cudaError_t err_code;

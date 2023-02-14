@@ -9,6 +9,10 @@
 #include <cerrno>
 #include <cstring>
 
+#ifndef GENERATION_SEED
+#define GENERATION_SEED 1
+#endif
+
 #ifndef MAX_THREADS
 #define MAX_THREADS 64
 #endif
@@ -210,7 +214,7 @@ int main(void)
         return -1;
     }
 
-    build_cities(1);
+    build_cities(GENERATION_SEED);
     int distance = greedy_path_dist(current_path, 0);
     current_path[NUM_CITIES] = distance;
 
