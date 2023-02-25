@@ -368,7 +368,7 @@ int main(void)
 
 
 	// initial path chosen with a greedy heuristic, stored in current_path
-	int current_path[NUM_CITIES];
+	int current_path[NUM_CITIES+1];
 	float best_dist = greedy_path_dist(current_path, 0);
 	
 	printf("Greedy best Distance: %f\n", best_dist);
@@ -431,7 +431,7 @@ int main(void)
 
     // Copy best distance from GPU into best_dist
   	err_code = cudaMemcpy(&best_dist,
-  		memory_block + NUM_CITIES,
+  		memory_block + NUM_CITIES + 1,
   		sizeof(float),
   		cudaMemcpyDeviceToHost
   	);
