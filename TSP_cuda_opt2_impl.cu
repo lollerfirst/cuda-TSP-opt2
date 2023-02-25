@@ -181,7 +181,8 @@ __global__ void cuda_calculate_opts(__half* device_cities,
 	// If swap_b + 1 is swap_a and swap_a - 1 is swap_b, subtract 0.
 	float subtract_accumulate = 
 			__half2float(
-				device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])])
+				device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])]
+			)
 			+
 			__half2float(device_cities[triu_index(current_path[swap_b], current_path[swap_b+1])]
 			)
@@ -189,7 +190,7 @@ __global__ void cuda_calculate_opts(__half* device_cities,
 			+
 			__half2float(device_cities[triu_index(current_path[swap_a-1], current_path[swap_a])]
 			)
-				* (swap_a - 1 != swap_b);
+				* (swap_a - 1 != swap_b)
 			+
 			__half2float(device_cities[triu_index(current_path[swap_a], current_path[swap_a+1])]
 			);

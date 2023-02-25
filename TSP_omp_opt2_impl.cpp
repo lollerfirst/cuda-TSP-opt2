@@ -21,7 +21,7 @@
 #define NUM_CITIES 100
 #endif
 
-#define MAX_DISTANCE 32767
+#define MAX_DISTANCE 3267
 
 #define BUFFER_LEN ((NUM_CITIES * (NUM_CITIES - 1)) / 2)
 #define NUM_OPTS (((NUM_CITIES * (NUM_CITIES - 3)) / 2) + 1)
