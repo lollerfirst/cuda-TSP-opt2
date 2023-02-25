@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <cuda_profiler_api.h>
+#include <cuda_fp16.h>
 
 #ifndef GENERATION_SEED
 #define GENERATION_SEED 1
@@ -13,26 +13,26 @@
 #define NUM_CITIES 100
 #endif
 
-#define MAX_DISTANCE 32767
+#define MAX_DISTANCE 3267
 #define MEM_ALIGNMENT 32
 #define BLOCK_SIZE 1024
 
 #define BUFFER_LEN ((NUM_CITIES * (NUM_CITIES - 1)) / 2)
-#define ALIGNED_UNIT_SIZE ((((sizeof(int) * NUM_CITIES + sizeof(int)) / MEM_ALIGNMENT) + 1) * MEM_ALIGNMENT)
+#define ALIGNED_UNIT_SIZE ((((sizeof(int) * (NUM_CITIES+1) + sizeof(int)) / MEM_ALIGNMENT) + 1) * MEM_ALIGNMENT)
 #define NUM_OPTS (((NUM_CITIES * (NUM_CITIES - 3)) / 2) + 1)
 
 // Distance matrix represented in compressed form
-static int cities[BUFFER_LEN];
+static __half cities[BUFFER_LEN];
 
 // indexes the compressed sparse matrix holding the distances
-__inline__ __host__ __device__ int triu_index(const int i, const int j)
+__inline__ __host__ __device__ size_t triu_index(const int i, const int j)
 {
 	const int side_i = NUM_CITIES - (i+1);
 	const int side_j = NUM_CITIES - (j+1);
 	const int sub_area_i = side_i*(side_i+1)/2;
 	const int sub_area_j = side_j*(side_j+1)/2;
 
-	return (((BUFFER_LEN - sub_area_i) + j - i - 1)* (i < j)) +
+	return (((BUFFER_LEN - sub_area_i) + j - i - 1) * (i < j)) +
 		(((BUFFER_LEN - sub_area_j) + i - j - 1) * (j < i));
 }
 
@@ -40,8 +40,9 @@ __inline__ __host__ __device__ int triu_index(const int i, const int j)
 // find swap_b as f(swap_a) - index - 1
 __inline__ __device__ void calculate_swap_indices(int* swap_b, int* swap_a, const int index)
 {
-	*swap_a = static_cast<int>(floorf((1.0f + sqrtf(static_cast<float>(1+8*index))) / 2.0f));
-	*swap_b = ((swap_a[0] * (swap_a[0] + 1)) / 2) - index - 1;
+	*swap_a = __float2int_rd((1.0f + sqrtf(static_cast<float>(1+8*index))) / 2.0f);
+	*swap_b = ((swap_a[0] * (swap_a[0] + 1)) / 2) - index;
+	++(*swap_a);
 }
 
 // build the data structure on the host
@@ -52,59 +53,54 @@ void build_cities(unsigned int seed)
 	int i;
 	for (i=0; i<BUFFER_LEN; ++i)
 	{	
-		cities[i] = rand() % MAX_DISTANCE;
+
+		cities[i] = __int2half_rd(rand() % MAX_DISTANCE);
 	}
 }
 
-int greedy_path_dist(int* path, int initial_idx)
+float greedy_path_dist(int* path, int initial_idx)
 {
-	int distance = 0;
-	size_t i;
-	int idx = initial_idx;
+	float distance = 0.0f;
+	int i;
 	
 	bool visited_cities[NUM_CITIES] = {0};
 	
-	// Can't choose the initial before having ended the tour
+	path[0] = initial_idx;
 	visited_cities[initial_idx] = true;
 	
 	
 	// For every node in the path
-	for (i=0; i<NUM_CITIES; ++i)
+	for (i=1; i<NUM_CITIES+1; ++i)
 	{		
-		if (i != NUM_CITIES - 1)
+		if (i != NUM_CITIES)
 		{
-			int best_dist = INT_MAX;
-			int best_idx = -1;
-			size_t j;
+			float best_dist = MAX_DISTANCE+1;
+			int best_idx = 0;
+			int j;
 			
 			// For every possible link
 			for (j=0; j<NUM_CITIES; ++j)
 			{
-				if (idx != j &&
-					cities[triu_index(idx, j)] <= best_dist &&
+				float local_distance = __half2float(cities[triu_index(path[i-1], j)]);
+
+				if (path[i-1] != j &&
+					local_distance <= best_dist &&
 					!visited_cities[j])
 				{
-					best_dist = cities[triu_index(idx, j)];
+					best_dist = local_distance;
 					best_idx = j;
 				}
 			}
 			
-			if (best_idx == -1)
-			{
-				return -1;
-			}
-			
 			visited_cities[best_idx] = true;
 			path[i] = best_idx;
-			idx = best_idx;
-			distance += best_dist;
 		}
 		else
 		{
-			// LAST MUST BE the initial idx
 			path[i] = initial_idx;
-			distance += cities[triu_index(idx, initial_idx)];
 		}
+
+		distance += __half2float(cities[triu_index(path[i-1], path[i])]);
 	}
 	
 	return distance;
@@ -144,7 +140,7 @@ __global__ void copy(TYPE* dest, const TYPE* src, size_t count)
 }
 
 // Worker threads
-__global__ void cuda_calculate_opts(int* device_cities,
+__global__ void cuda_calculate_opts(__half* device_cities,
 	int* memory_block,
 	int initial_idx)
 {
@@ -162,8 +158,10 @@ __global__ void cuda_calculate_opts(int* device_cities,
 	lock = 0;
 	
 	int* current_path = memory_block;
+	float* f_current_distance = reinterpret_cast<float*>(current_path) + NUM_CITIES+1;
 		
 	int* output_path = memory_block + (ALIGNED_UNIT_SIZE / sizeof(int)) * (blockIdx.x + 1);
+	float* f_output_distance = reinterpret_cast<float*>(output_path) + NUM_CITIES+1;
 	
 	// ENUMERATION OF OPTS:
 	int swap_a, swap_b;
@@ -171,42 +169,55 @@ __global__ void cuda_calculate_opts(int* device_cities,
 	
 
 	int swap_bin[2];
-	int distance = current_path[NUM_CITIES];
+	float distance = *f_current_distance;
 	
 	// Load only the nodes to swap
 	swap_bin[1] = current_path[swap_b];
 	swap_bin[0] = current_path[swap_a];
 	
-	
 	// RECALCULATE DISTANCE:
 	// subtract distance from swap_b - 1 to swap_b and from swap_b to swap_b + 1
 	// subtract distance from swap_a - 1 to swap_a and from swap_a to swap_a + 1
 	// If swap_b + 1 is swap_a and swap_a - 1 is swap_b, subtract 0.
-	distance -= (swap_b > 0) ? device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])] : 0;
+	float subtract_accumulate = 
+			__half2float(
+				device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])])
+			+
+			__half2float(device_cities[triu_index(current_path[swap_b], current_path[swap_b+1])]
+			)
+				* (swap_b + 1 != swap_a)
+			+
+			__half2float(device_cities[triu_index(current_path[swap_a-1], current_path[swap_a])]
+			)
+				* (swap_a - 1 != swap_b);
+			+
+			__half2float(device_cities[triu_index(current_path[swap_a], current_path[swap_a+1])]
+			);
 	
-	distance -= device_cities[triu_index(initial_idx, current_path[swap_b])]
-		* (swap_b == 0);
-	distance -= device_cities[triu_index(current_path[swap_b], current_path[swap_b+1])]
-		* (swap_b + 1 != swap_a);
-	distance -= device_cities[triu_index(current_path[swap_a-1], current_path[swap_a])]
-		* (swap_a - 1 != swap_b);
-	distance -= device_cities[triu_index(current_path[swap_a], current_path[swap_a+1])];
+	distance -= subtract_accumulate;
 	
 	// add distance from swap_b - 1 to swap_a and from swap_a to swap_b + 1
 	// add distance from swap_a - 1 to swap_b and from swap_b to swap_a + 1
 	// If swap_b + 1 is swap_a and swap_a - 1 is swap_b, add 0.
-	distance += (swap_b > 0) ? device_cities[triu_index(current_path[swap_b-1], current_path[swap_a])] : 0;
+	float add_accumulate = 
+		__half2float(device_cities[triu_index(current_path[swap_b-1], current_path[swap_a])]
+		)
+		+
+		__half2float(device_cities[triu_index(current_path[swap_a], current_path[swap_b+1])]
+		)
+			* (swap_b + 1 != swap_a)
+		+
+		__half2float(device_cities[triu_index(current_path[swap_a-1], current_path[swap_b])]
+		)
+			* (swap_a - 1 != swap_b)
+		+
+		__half2float(device_cities[triu_index(current_path[swap_b], current_path[swap_a+1])]);
+
+	distance += add_accumulate;
 	
-	distance += device_cities[triu_index(initial_idx, current_path[swap_a])]
-		* (swap_b == 0);
-	distance += device_cities[triu_index(current_path[swap_a], current_path[swap_b+1])]
-		* (swap_b + 1 != swap_a);
-	distance += device_cities[triu_index(current_path[swap_a-1], current_path[swap_b])]
-		* (swap_a - 1 != swap_b);
-	distance += device_cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
 	
 	// initialize calculated distance with 0 ~~ default value/not improved
-	output_path[NUM_CITIES] = 0;
+	*f_output_distance = 0.0f;
 
 	// Block-wide sync
 	__syncthreads();
@@ -214,13 +225,13 @@ __global__ void cuda_calculate_opts(int* device_cities,
 	// Acquire the lock
 	while (trylock(&lock) == false);
 	
-	if (distance < current_path[NUM_CITIES] &&
-		(output_path[NUM_CITIES] == 0 || distance < output_path[NUM_CITIES]))
+	if (distance < (*f_current_distance) &&
+		((*f_output_distance) == 0.0f || distance < (*f_output_distance)))
 	{
-		output_path[NUM_CITIES] = distance;
+		*f_output_distance = distance;
 	
-		const int num_blocks_copy = (NUM_CITIES + BLOCK_SIZE - 1) / BLOCK_SIZE;
-		copy<<<num_blocks_copy, BLOCK_SIZE>>>(output_path, current_path, NUM_CITIES);
+		const int num_blocks_copy = ((NUM_CITIES+1) + BLOCK_SIZE - 1) / BLOCK_SIZE;
+		copy<<<num_blocks_copy, BLOCK_SIZE>>>(output_path, current_path, NUM_CITIES+1);
 		cudaDeviceSynchronize();
 		
 		output_path[swap_a] = swap_bin[1];
@@ -235,14 +246,15 @@ __global__ void cuda_calculate_opts(int* device_cities,
 }
 
 // Control thread
-__global__ void cuda_opt2(int* device_cities, int* memory_block, int initial_idx)
+__global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_idx)
 {
 
 	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
 	const int num_blocks_copy = ((ALIGNED_UNIT_SIZE/sizeof(int)) + BLOCK_SIZE - 1) / BLOCK_SIZE;
-	
-	int new_best_dist = memory_block[NUM_CITIES];
-	int old_best_dist = new_best_dist + 1;
+	float* f_memory_ptr = reinterpret_cast<float*>(memory_block);
+
+	float new_best_dist = f_memory_ptr[NUM_CITIES+1];
+	float old_best_dist = new_best_dist + 10.0f;
 	int best_index = -1;
 	
 	switch (best_index)
@@ -286,8 +298,8 @@ __global__ void cuda_opt2(int* device_cities, int* memory_block, int initial_idx
 				// retrieve best calculated distance amongst various blocks
 				for (int i=1; i<num_blocks+1; ++i)
 				{
-					int calc_distance = memory_block[(ALIGNED_UNIT_SIZE/sizeof(int)) * i + NUM_CITIES];
-					if (calc_distance > 0 && calc_distance < new_best_dist)
+					float calc_distance = f_memory_ptr[(ALIGNED_UNIT_SIZE/sizeof(int)) * i + (NUM_CITIES+1)];
+					if (calc_distance > 0.0f && calc_distance < new_best_dist)
 					{
 						new_best_dist = calc_distance;
 						best_index = i; 
@@ -303,7 +315,7 @@ __global__ void cuda_opt2(int* device_cities, int* memory_block, int initial_idx
 
 int main(void)
 {
-	int* device_cities;
+	__half* device_cities;
 	struct timespec begin, end;
 
 	// Build the data structure
@@ -313,7 +325,7 @@ int main(void)
 	cudaError_t err_code;
 
 	// Allocate device cities
-	err_code = cudaMalloc(&device_cities, BUFFER_LEN * sizeof(int));
+	err_code = cudaMalloc(&device_cities, BUFFER_LEN * sizeof(__half));
 
 	if (err_code)
 	{
@@ -357,12 +369,12 @@ int main(void)
 
 	// initial path chosen with a greedy heuristic, stored in current_path
 	int current_path[NUM_CITIES];
-	int best_dist = greedy_path_dist(current_path, 0);
+	float best_dist = greedy_path_dist(current_path, 0);
 	
-	printf("Greedy best Distance: %d\n", best_dist);
+	printf("Greedy best Distance: %f\n", best_dist);
   	puts("Greedy path: ");
   	
-  	for (int i=0; i<NUM_CITIES; ++i)
+  	for (int i=0; i<NUM_CITIES+1; ++i)
   	{
   		printf("%d\t", current_path[i]);
   	}
@@ -370,27 +382,27 @@ int main(void)
     	
 	err_code = cudaMemcpy(memory_block,
 		current_path,
-		sizeof(int) * NUM_CITIES,
+		sizeof(int) * (NUM_CITIES+1),
 		cudaMemcpyHostToDevice
 	);
     	
-    	if (err_code)
+    if (err_code)
 	{
-        	printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
-        	return -1;
+		printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+		return -1;
 	}
 		
-  	err_code = cudaMemcpy(memory_block + NUM_CITIES,
+  	err_code = cudaMemcpy(memory_block + (NUM_CITIES+1),
   		&best_dist,
-  		sizeof(int),
+  		sizeof(float),
   		cudaMemcpyHostToDevice
   	);
 
 	if (err_code)
-        {
-                printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
-                return -1;
-        }
+	{
+		printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+		return -1;
+	}
         
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
@@ -407,10 +419,10 @@ int main(void)
   	err_code = cudaGetLastError();
   	
   	if (err_code)
-        {
-                printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
-                return -1;
-        }
+	{
+		printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+		return -1;
+	}
         
 
 	fprintf (stderr, "Total GPU time = %.9f seconds\n",
@@ -420,28 +432,28 @@ int main(void)
     // Copy best distance from GPU into best_dist
   	err_code = cudaMemcpy(&best_dist,
   		memory_block + NUM_CITIES,
-  		sizeof(int),
+  		sizeof(float),
   		cudaMemcpyDeviceToHost
   	);
 
 	if (err_code)
-        {
-                printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
-                return -1;
-        }
+	{
+		printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+		return -1;
+	}
         
-        // Copy the best path from GPU into current_path
-        cudaMemcpy(current_path,
-  		memory_block,
-  		sizeof(int) * (NUM_CITIES),
-  		cudaMemcpyDeviceToHost
+	// Copy the best path from GPU into current_path
+	cudaMemcpy(current_path,
+		memory_block,
+		sizeof(int) * (NUM_CITIES+1),
+		cudaMemcpyDeviceToHost
   	);
 
   	
-  	printf("Best Distance: %d\n", best_dist);
+  	printf("Best Distance: %f\n", best_dist);
   	puts("Path: ");
   	
-  	for (int i=0; i<NUM_CITIES; ++i)
+  	for (int i=0; i<NUM_CITIES+1; ++i)
   	{
   		printf("%d\t", current_path[i]);
   	}
