@@ -54,7 +54,7 @@ void build_cities(unsigned int seed)
 	for (i=0; i<BUFFER_LEN; ++i)
 	{	
 
-		cities[i] = __int2half_rd(rand() % MAX_DISTANCE);
+		cities[i] = __int2half_rn(rand() % MAX_DISTANCE);
 	}
 }
 
