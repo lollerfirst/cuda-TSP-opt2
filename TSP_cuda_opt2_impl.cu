@@ -336,7 +336,7 @@ int main(void)
 	// Copy cities from host to device, cities is costant
 	err_code = cudaMemcpy(device_cities,
 		cities,
-		sizeof(int) * (BUFFER_LEN),
+		sizeof(__half) * (BUFFER_LEN),
 		cudaMemcpyHostToDevice
 	);
 
