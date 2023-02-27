@@ -143,9 +143,16 @@ __global__ void copy(TYPE* dest, const TYPE* src, size_t count)
 	return;
 }
 
+struct SharedMem
+{
+	half arr1[BLOCK_SIZE * STRIDE];
+	half arr2[BLOCK_SIZE * STRIDE];
+	int lock;
+};
+
 // Worker threads
 __global__ void cuda_calculate_opts(__half* device_cities,
-	int* memory_block,
+	int* memory,
 	int initial_idx)
 {
 
@@ -157,16 +164,17 @@ __global__ void cuda_calculate_opts(__half* device_cities,
 	{
 		return;
 	}
+
+
+	extern __shared__ SharedMem block_mem[];
+
+	half* A = block_mem->arr1;
+	half* B = block_mem->arr2;
+	int& lock = block_mem->lock;
 	
-	__shared__ int lock;
-	lock = 0;
-
-	// A shared matrix
-	__shared__ half A[BLOCK_SIZE * STRIDE];
-	// B shared matrix
-	__shared__ half B[BLOCK_SIZE * STRIDE];
-
-	// NOTE: uninitialized! Could theoretically contain any value. They are 0 in practice.
+	int swap_a, swap_b;
+	half truth_1, truth_2;
+	float distance;
 
 	// Fragments  
 	nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::row_major> a_frag;
@@ -176,73 +184,106 @@ __global__ void cuda_calculate_opts(__half* device_cities,
 	nvcuda::wmma::fill_fragment(c_frag, 0.0f);
 
 	// Get pointers to current path and current distance
-	int* current_path = memory_block;
+	int* current_path = memory;
 	float* f_current_distance = reinterpret_cast<float*>(current_path) + NUM_CITIES+1;
 	
 	// Get pointers to output path and output distance
-	int* output_path = memory_block + (ALIGNED_UNIT_SIZE / sizeof(int)) * (blockIdx.x + 1);
+	int* output_path = memory + (ALIGNED_UNIT_SIZE / sizeof(int)) * (blockIdx.x + 1);
 	float* f_output_distance = reinterpret_cast<float*>(output_path) + NUM_CITIES+1;
 	
 	// Calculate the swap indices for this thread:
-	int swap_a, swap_b;
 	calculate_swap_indices(&swap_b, &swap_a, tid);
-	
 
-	int swap_bin[2];
-	// Load only the nodes to swap
-	swap_bin[1] = current_path[swap_b];
-	swap_bin[0] = current_path[swap_a];
-
-	float distance = *f_current_distance;
+	distance = *f_current_distance;
+	truth_1 = __int2half_rn(swap_b + 1 != swap_a);
+	truth_2 = __int2half_rn(swap_a - 1 != swap_b);
 	
 	/** DISTANCE SUBTRACTION SEQUENCE **/
 	
 	/** MATMUL 16x16x16 CORRESPONDING TO THE FIRST 16 LANES OF THE WARP **/
 	
-	// Manually load fragment a with subtracting values
+	// Load distances to be subtracted into A
 	A[threadIdx.x * STRIDE] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])];
 	A[threadIdx.x * STRIDE + 1] = device_cities[triu_index(current_path[swap_b], current_path[swap_b+1])];
 	A[threadIdx.x * STRIDE + 2] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_a])];
 	A[threadIdx.x * STRIDE + 3] = device_cities[triu_index(current_path[swap_a], current_path[swap_a+1])];
-	// TODO: fill rest with zeros
+	
 
-	// Load fragment b with truth values
+	// Load truth values into B
 	B[threadIdx.x * STRIDE] = 0x3C00;
-	B[threadIdx.x * STRIDE + 1] = __int2half_rn(swap_b + 1 != swap_a);
-	B[threadIdx.x * STRIDE + 2] = __int2half_rn(swap_a - 1 != swap_b);
+	B[threadIdx.x * STRIDE + 1] = truth_1;
+	B[threadIdx.x * STRIDE + 2] = truth_2;
 	B[threadIdx.x * STRIDE + 3] = 0x3C00;
-	// TODO: fill rest with zeros
+	
+	// Fill rest with 0
+	#pragma unroll
+	for (int i = 4; i<STRIDE; ++i)
+	{
+		B[threadIdx.x * STRIDE + i] = 0x0000;
+	}
 	
 	// Load tensor core registers. First half.
 	nvcuda::wmma::load_matrix_sync(a_frag, A + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), STRIDE);
 	nvcuda::wmma::load_matrix_sync(b_frag, B + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), STRIDE);
 
-	// Perform first half-warp matrix multiplication
+	// Perform fused multiply add
 	nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
 	
-	
+	// Store result into B
+	nvcuda::wmma::store_matrix_sync(B + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), c_frag, STRIDE, nvcuda::wmma::mem_row_major);
+
 	// Retrieve distance, which is on the diagonal of the matrix
-	((threadIdx.x % 32) < 16) ? distance -= c_frag.x[(threadIdx.x % 32) * 16 + threadIdx.x % 32] : 0;
+	((threadIdx.x % 32) < 16) ? distance -= B[(threadIdx.x % 32) * STRIDE + (threadIdx.x % 32)] : 0;
 	
+	// Reload B with truth values
+	B[threadIdx.x * STRIDE] = 0x3C00;
+	B[threadIdx.x * STRIDE + 1] = truth_1;
+	B[threadIdx.x * STRIDE + 2] = truth_2;
+	B[threadIdx.x * STRIDE + 3] = 0x3C00;
+
+	// Fill rest with 0
+	#pragma unroll
+	for (int i = 4; i<STRIDE; ++i)
+	{
+		B[threadIdx.x * STRIDE + i] = 0x0000;
+	}
+
 	// Load tensor core registers. Second half.
 	nvcuda::wmma::load_matrix_sync(a_frag, A + (((threadIdx.x & 0xFFFFFFE0) + 16) * STRIDE), STRIDE);
 	nvcuda::wmma::load_matrix_sync(b_frag, B + (((threadIdx.x & 0xFFFFFFE0) + 16) * STRIDE), STRIDE);
 
+	// Perform fused multiply add
 	nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
 
-	
-	((threadIdx.x % 32) >= 16) ? distance -= c_frag.x[(threadIdx.x % 32) * 16 + threadIdx.x % 32] : 0;
+	// Store result into B
+	nvcuda::wmma::store_matrix_sync(B + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), c_frag, STRIDE, nvcuda::wmma::mem_row_major);
+
+	// Each thread reads his own cell of the diagonal of B
+	((threadIdx.x % 32) >= 16) ? distance -= B[(threadIdx.x % 32) * STRIDE + threadIdx.x % 32] : 0;
 
 
 	/** DISTANCE ADDITION SEQUENCE **/
 	
 	/** MATMUL 16x16x16 CORRESPONDING TO THE FIRST 16 LANES OF THE WARP **/
 	
-	// Manually load fragment a with addition values
+	// Load distances to be added into A
 	A[threadIdx.x * STRIDE] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_a])];
 	A[threadIdx.x * STRIDE + 1] = device_cities[triu_index(current_path[swap_a], current_path[swap_b+1])];
 	A[threadIdx.x * STRIDE + 2] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_b])];
 	A[threadIdx.x * STRIDE + 3] = device_cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
+
+	// Reload B with truth values
+	B[threadIdx.x * STRIDE] = 0x3C00;
+	B[threadIdx.x * STRIDE + 1] = truth_1;
+	B[threadIdx.x * STRIDE + 2] = truth_2;
+	B[threadIdx.x * STRIDE + 3] = 0x3C00;
+
+	// Fill rest with 0
+	#pragma unroll
+	for (int i = 4; i<STRIDE; ++i)
+	{
+		B[threadIdx.x * STRIDE + i] = 0x0000;
+	}
 	
 	// Load tensor core registers. First half.
 	nvcuda::wmma::load_matrix_sync(a_frag, A + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), STRIDE);
@@ -251,18 +292,37 @@ __global__ void cuda_calculate_opts(__half* device_cities,
 	// Perform first half matrix multiplication
 	nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
 
+	// Store results into B
+	nvcuda::wmma::store_matrix_sync(B + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), c_frag, STRIDE, nvcuda::wmma::mem_row_major);
 	
-	// Retrieve distance, which is on the diagonal of the matrix
-	((threadIdx.x % 32) < 16) ? distance += c_frag.x[(threadIdx.x % 32) * 16 + threadIdx.x % 32] : 0;
+	// Each thread reads his own cell of the diagonal of B
+	((threadIdx.x % 32) < 16) ? distance += B[(threadIdx.x % 32) * STRIDE + threadIdx.x % 32] : 0;
+
+	// Reload B with truth values
+	B[threadIdx.x * STRIDE] = 0x3C00;
+	B[threadIdx.x * STRIDE + 1] = truth_1;
+	B[threadIdx.x * STRIDE + 2] = truth_2;
+	B[threadIdx.x * STRIDE + 3] = 0x3C00;
+
+	// Fill rest with 0
+	#pragma unroll
+	for (int i = 4; i<STRIDE; ++i)
+	{
+		B[threadIdx.x * STRIDE + i] = 0x0000;
+	}
 	
 	// Load tensor core registers. Second half.
 	nvcuda::wmma::load_matrix_sync(a_frag, A + (((threadIdx.x & 0xFFFFFFE0) + 16) * STRIDE), STRIDE);
 	nvcuda::wmma::load_matrix_sync(b_frag, B + (((threadIdx.x & 0xFFFFFFE0) + 16) * STRIDE), STRIDE);
 
+	// Perform Fused Multiply Add
 	nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
 
-	
-	((threadIdx.x % 32) >= 16) ? distance += c_frag.x[(threadIdx.x % 32) * 16 + threadIdx.x % 32] : 0;
+	// Store results into B
+	nvcuda::wmma::store_matrix_sync(B + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), c_frag, STRIDE, nvcuda::wmma::mem_row_major);
+
+	// Each thread reads his own cell of the diagonal of B
+	((threadIdx.x % 32) >= 16) ? distance += B[(threadIdx.x % 32) * STRIDE + threadIdx.x % 32] : 0;
 
 	/*
 	// RECALCULATE DISTANCE:
@@ -326,8 +386,8 @@ __global__ void cuda_calculate_opts(__half* device_cities,
 		copy<<<num_blocks_copy, BLOCK_SIZE>>>(output_path, current_path, NUM_CITIES+1);
 		cudaDeviceSynchronize();
 		
-		output_path[swap_a] = swap_bin[1];
-		output_path[swap_b] = swap_bin[0];
+		output_path[swap_a] = current_path[swap_b];
+		output_path[swap_b] = current_path[swap_a];
 	}	
 	
 	// Release the lock
@@ -372,7 +432,7 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 				old_best_dist = new_best_dist;
 
 				// Launch kernel that computes paths and distances
-				cuda_calculate_opts<<<num_blocks, BLOCK_SIZE>>>(
+				cuda_calculate_opts<<<num_blocks, BLOCK_SIZE, sizeof(SharedMem)>>>(
 					device_cities,
 					memory_block,
 					initial_idx
@@ -409,12 +469,19 @@ int main(void)
 {
 	__half* device_cities;
 	struct timespec begin, end;
+	int* memory_block;
+
+	// Errors
+	cudaError_t err_code;
 
 	// Build the data structure
 	build_cities(GENERATION_SEED);
 
-	// Errors
-	cudaError_t err_code;
+	// Increase the amount of shared memory that the kernel can use
+	cudaFuncSetAttribute(
+        cuda_calculate_opts,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+		sizeof(SharedMem));
 
 	// Allocate device cities
 	err_code = cudaMalloc(&device_cities, BUFFER_LEN * sizeof(__half));
@@ -440,8 +507,6 @@ int main(void)
 
 	// Calculate number of blocks necessary
 	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
-	int* memory_block;
 
 	
 	// Calculate memory block size
