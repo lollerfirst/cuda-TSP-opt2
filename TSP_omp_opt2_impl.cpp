@@ -183,7 +183,7 @@ void opt2(int* current_path, const int initial_idx)
 
         #pragma omp barrier
 
-        if (output[2] < new_best_distance)
+        if (output[2] > 0 && output[2] < new_best_distance)
         {
             new_best_distance = output[2];
             current_path[NUM_CITIES] = output[2];

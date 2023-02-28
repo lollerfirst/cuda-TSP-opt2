@@ -132,18 +132,6 @@ __inline__ __device__ void unlock(int* mutex)
 	(void) atomicExch(mutex, 0);
 }
 
-template <typename TYPE>
-__global__ void copy(TYPE* dest, const TYPE* src, size_t count)
-{
-	int tid = threadIdx.x + (blockIdx.x * blockDim.x);
-	if (tid < count)
-	{
-		dest[tid] = src[tid];
-	}
-	
-	return;
-}
-
 struct __align__(32) SharedMem
 {
 	half arr1[BLOCK_SIZE * STRIDE];
@@ -321,7 +309,7 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 
 	float* f_memory_ptr = reinterpret_cast<float*>(memory_block);
 
-	float new_best_dist = *f_memory_ptr;
+	float new_best_dist = f_memory_ptr[NUM_CITIES + 1];
 	float old_best_dist = new_best_dist + 10.0f;
 	
 	while (new_best_dist < old_best_dist) 
