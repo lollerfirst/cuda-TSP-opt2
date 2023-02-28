@@ -232,7 +232,7 @@ __global__ void cuda_calculate_opts(
 	
 	// Get pointers to output indices and output distance
 	int* output = memory + start_unit + aligned_unit * blockIdx.x;
-	float* f_output_distance = reinterpret_cast<float*>(output_path) + 2;
+	float* f_output_distance = reinterpret_cast<float*>(output) + 2;
 	
 	// Calculate the swap indices for this thread:
 	calculate_swap_indices(&swap_b, &swap_a, tid);
