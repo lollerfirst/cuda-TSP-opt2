@@ -111,24 +111,23 @@ int greedy_path_dist(int* path, int initial_idx)
 	return distance;
 }
 
-void opt2(int* current_path, int* output_path, const int initial_idx)
+void opt2(int* current_path, const int initial_idx)
 {
 
     constexpr std::size_t num_threads = (NUM_OPTS < MAX_THREADS) ? NUM_OPTS : MAX_THREADS;
     omp_set_num_threads(num_threads);
 
-    int* still_memory_pointer = current_path;
     int new_best_distance, old_best_distance;
     new_best_distance = current_path[NUM_CITIES];
     old_best_distance = new_best_distance+1;
-    int final_mask = 0x80000000;
+    
+    int output[3];
 
 
     while (new_best_distance < old_best_distance)
     {
-        final_mask ^= 0x80000000;
         old_best_distance = new_best_distance;
-        output_path[NUM_CITIES] = 0;
+        output[2] = 0;
 
         #pragma omp parallel for
         for (int i=0; i<NUM_OPTS; ++i)
@@ -137,10 +136,7 @@ void opt2(int* current_path, int* output_path, const int initial_idx)
 	        calculate_swap_indices(swap_b, swap_a, i);
             //fprintf(stderr, "i = %d, a = %d, b = %d\n", i, swap_a, swap_b);
 
-            int swap_bin[2];
 	        int distance = current_path[NUM_CITIES];
-            swap_bin[1] = current_path[swap_b];
-            swap_bin[0] = current_path[swap_a];
 
             // RECALCULATE DISTANCE:
             // subtract distance from swap_b - 1 to swap_b and from swap_b to swap_b + 1
@@ -174,45 +170,40 @@ void opt2(int* current_path, int* output_path, const int initial_idx)
                 // check if the calculated distance is better than the previously calculated one
                 // and better of any other threads' of this iteration
                 if (distance < current_path[NUM_CITIES] &&
-                    (output_path[NUM_CITIES] == 0 || distance < output_path[NUM_CITIES]))
+                    (output[2] == 0 || distance < output[2]))
                 {
-                    output_path[NUM_CITIES] = distance;
+                    output[2] = distance;
 
-                    memcpy(output_path, current_path, NUM_CITIES*sizeof(int));
-                    output_path[swap_b] = swap_bin[0];
-                    output_path[swap_a] = swap_bin[1];
+                    output[0] = swap_b;
+                    output[1] = swap_a;
                 }
             }
         }
 
         #pragma omp barrier
 
-        new_best_distance = (output_path[NUM_CITIES] > 0) ? output_path[NUM_CITIES] : new_best_distance;
-        int* temp = current_path;
-        current_path = output_path;
-        output_path = temp;
-    }
+        if (output[2] < new_best_distance)
+        {
+            new_best_distance = output[2];
+            current_path[NUM_CITIES] = output[2];
 
-    // embed initial 1 bit in the distance if the result is on the output_path
-    still_memory_pointer[NUM_CITIES] |= final_mask;
+            int& b = output[0];
+            int& a = output[1];
+            int temp = current_path[b];
+            current_path[b] = current_path[a];
+            current_path[a] = temp;
+        }
+    }
 }
 
 int main(void)
 {
-    int *current_path, *output_path;
+    int *current_path;
     struct timespec begin, end;
 
     current_path = (int*) calloc(NUM_CITIES+1, sizeof(int));
     if (current_path == nullptr)
     {
-        perror(strerror(errno));
-        return -1;
-    }
-
-    output_path = (int*) calloc(NUM_CITIES+1, sizeof(int));
-    if (output_path == nullptr)
-    {
-        free(current_path);
         perror(strerror(errno));
         return -1;
     }
@@ -230,16 +221,14 @@ int main(void)
   	std::cout << "\n";
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
-    opt2(current_path, output_path, 0);
+    opt2(current_path, 0);
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 
     
     std::cerr << "Total opt2 time = " << (end.tv_nsec - begin.tv_nsec) / 1000000000.0 +
             (end.tv_sec  - begin.tv_sec) << " seconds\n";
 
-    int* selected = (current_path[NUM_CITIES] & 0x80000000) ? output_path : current_path;
-
-    distance = selected[NUM_CITIES];
+    distance = current_path[NUM_CITIES];
 
     std::cout << "Opt-2 best distance: " << distance << "\nOpt-2 path:\n";
     for (std::size_t i=0; i<NUM_CITIES; ++i)

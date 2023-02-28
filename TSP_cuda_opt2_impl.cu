@@ -319,7 +319,7 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 	constexpr int aligned_unit = ALIGN(sizeof(int) * 2 + sizeof(float)) / sizeof(int);
 	constexpr int start_unit = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) / sizeof(int);
 
-	float* f_memory_ptr = reinterpret_cast<float*>(memory_block) + NUM_CITIES + 1;
+	float* f_memory_ptr = reinterpret_cast<float*>(memory_block);
 
 	float new_best_dist = *f_memory_ptr;
 	float old_best_dist = new_best_dist + 10.0f;
@@ -367,6 +367,8 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 			int temp = memory_block[swap_a];
 			memory_block[swap_a] = memory_block[swap_b];
 			memory_block[swap_b] = temp;
+
+			f_memory_ptr[NUM_CITIES+1] = new_best_dist;
 		}
 	}
 
