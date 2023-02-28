@@ -22,8 +22,9 @@
 #define STRIDE 16
 
 #define BUFFER_LEN ((NUM_CITIES * (NUM_CITIES - 1)) / 2)
-#define ALIGNED_UNIT_SIZE ((((sizeof(int) * (NUM_CITIES+1) + sizeof(int)) / MEM_ALIGNMENT) + 1) * MEM_ALIGNMENT)
 #define NUM_OPTS (((NUM_CITIES * (NUM_CITIES - 3)) / 2) + 1)
+
+#define ALIGN(__X) ((((__X) / MEM_ALIGNMENT) + 1) * MEM_ALIGNMENT)
 
 // Distance matrix represented in compressed form
 static __half cities[BUFFER_LEN];
@@ -155,10 +156,12 @@ __device__ __inline__ void load_matrix_a(half* A, half* device_cities, half* cac
 	#pragma unroll
 	for (int i=0; i<4; ++i)
 	{
-		short* tmp = reinterpret_cast<short*>(&cached_values[i]);
-		*tmp |= 0x8000;
 		A[threadIdx.x * STRIDE + i] = cached_values[i];
 	}
+
+    // convert to negatives the first 4 values
+    long* tmp = reinterpret_cast<long*>(cached_values);
+    *tmp |= 0x8000800080008000;
 
 	#pragma unroll
 	for (int i=4; i<8; ++i)
@@ -192,6 +195,9 @@ __global__ void cuda_calculate_opts(
 	int initial_idx)
 {
 
+	constexpr int aligned_unit = ALIGN(sizeof(int) * 2 + sizeof(float)) / sizeof(int);
+	constexpr int start_unit = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) / sizeof(int);
+
 	// Thread identification
 	int tid = threadIdx.x + (blockIdx.x * blockDim.x);
 	
@@ -206,6 +212,7 @@ __global__ void cuda_calculate_opts(
 
 	half* A = block_mem->arr1;
 	half* B = block_mem->arr2;
+	// RESULT MATRIX C IS A + B IN MEMORY TERMS
 	float* C = reinterpret_cast<float*>(block_mem->arr1);
 	int& lock = block_mem->lock;
 	
@@ -223,9 +230,9 @@ __global__ void cuda_calculate_opts(
 	int* current_path = memory;
 	float* f_current_distance = reinterpret_cast<float*>(current_path) + NUM_CITIES+1;
 	
-	// Get pointers to output path and output distance
-	int* output_path = memory + (ALIGNED_UNIT_SIZE / sizeof(int)) * (blockIdx.x + 1);
-	float* f_output_distance = reinterpret_cast<float*>(output_path) + NUM_CITIES+1;
+	// Get pointers to output indices and output distance
+	int* output = memory + start_unit + aligned_unit * blockIdx.x;
+	float* f_output_distance = reinterpret_cast<float*>(output_path) + 2;
 	
 	// Calculate the swap indices for this thread:
 	calculate_swap_indices(&swap_b, &swap_a, tid);
@@ -234,7 +241,7 @@ __global__ void cuda_calculate_opts(
 	truth_1 = __int2half_rn(swap_b + 1 != swap_a);
 	truth_2 = __int2half_rn(swap_a - 1 != swap_b);
 	
-	// Cached distances
+	// Cache distances because we reload A and B multiple times
 	cached_values[0] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])];
 	cached_values[1] = device_cities[triu_index(current_path[swap_b], current_path[swap_b+1])];
 	cached_values[2] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_a])];
@@ -279,50 +286,6 @@ __global__ void cuda_calculate_opts(
 	// Each thread reads his own cell of the diagonal of B
 	((threadIdx.x % 32) >= 16) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % 16] : 0;
 
-	/*
-	// RECALCULATE DISTANCE:
-	// subtract distance from swap_b - 1 to swap_b and from swap_b to swap_b + 1
-	// subtract distance from swap_a - 1 to swap_a and from swap_a to swap_a + 1
-	// If swap_b + 1 is swap_a and swap_a - 1 is swap_b, subtract 0.
-	float subtract_accumulate = 
-			__half2float(
-				device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])]
-			)
-			+
-			__half2float(device_cities[triu_index(current_path[swap_b], current_path[swap_b+1])]
-			)
-				* (swap_b + 1 != swap_a)
-			+
-			__half2float(device_cities[triu_index(current_path[swap_a-1], current_path[swap_a])]
-			)
-				* (swap_a - 1 != swap_b)
-			+
-			__half2float(device_cities[triu_index(current_path[swap_a], current_path[swap_a+1])]
-			);
-	
-	distance -= subtract_accumulate;
-	
-	// add distance from swap_b - 1 to swap_a and from swap_a to swap_b + 1
-	// add distance from swap_a - 1 to swap_b and from swap_b to swap_a + 1
-	// If swap_b + 1 is swap_a and swap_a - 1 is swap_b, add 0.
-	float add_accumulate = 
-		__half2float(device_cities[triu_index(current_path[swap_b-1], current_path[swap_a])]
-		)
-		+
-		__half2float(device_cities[triu_index(current_path[swap_a], current_path[swap_b+1])]
-		)
-			* (swap_b + 1 != swap_a)
-		+
-		__half2float(device_cities[triu_index(current_path[swap_a-1], current_path[swap_b])]
-		)
-			* (swap_a - 1 != swap_b)
-		+
-		__half2float(device_cities[triu_index(current_path[swap_b], current_path[swap_a+1])]);
-
-	distance += add_accumulate;
-	
-	*/
-
 	// initialize calculated distance with 0 ~~ default value/not improved
 	*f_output_distance = 0.0f;
 
@@ -337,12 +300,8 @@ __global__ void cuda_calculate_opts(
 	{
 		*f_output_distance = distance;
 	
-		const int num_blocks_copy = ((NUM_CITIES+1) + BLOCK_SIZE - 1) / BLOCK_SIZE;
-		copy<<<num_blocks_copy, BLOCK_SIZE>>>(output_path, current_path, NUM_CITIES+1);
-		cudaDeviceSynchronize();
-		
-		output_path[swap_a] = current_path[swap_b];
-		output_path[swap_b] = current_path[swap_a];
+		output[0] = swap_b;
+		output[1] = swap_a;
 	}	
 	
 	// Release the lock
@@ -356,62 +315,58 @@ __global__ void cuda_calculate_opts(
 __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_idx)
 {
 
-	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
-	const int num_blocks_copy = ((ALIGNED_UNIT_SIZE/sizeof(int)) + BLOCK_SIZE - 1) / BLOCK_SIZE;
-	float* f_memory_ptr = reinterpret_cast<float*>(memory_block);
+	constexpr int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	constexpr int aligned_unit = ALIGN(sizeof(int) * 2 + sizeof(float)) / sizeof(int);
+	constexpr int start_unit = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) / sizeof(int);
 
-	float new_best_dist = f_memory_ptr[NUM_CITIES+1];
+	float* f_memory_ptr = reinterpret_cast<float*>(memory_block) + NUM_CITIES + 1;
+
+	float new_best_dist = *f_memory_ptr;
 	float old_best_dist = new_best_dist + 10.0f;
-	int best_index = -1;
 	
-	switch (best_index)
+	while (new_best_dist < old_best_dist) 
 	{
-		while (new_best_dist < old_best_dist) 
+
+		// save previous calculated distance
+		old_best_dist = new_best_dist;
+
+		// Launch kernel that computes paths and distances
+		cuda_calculate_opts<<<num_blocks, BLOCK_SIZE, sizeof(SharedMem)>>>(
+			device_cities,
+			memory_block,
+			initial_idx
+		);
+
+		// Wait for child grid to terminate
+		cudaDeviceSynchronize();
+
+		cudaError_t err_code = cudaGetLastError();
+		if (err_code)
 		{
-			// THIS SWITCH CUTS OFF THE UNNECESSARY COPY KERNEL CALL AT THE BEGINNING
+			return;
+		}
+
+		// retrieve best calculated distance amongst various blocks
+		int best_index = -1;
+		for (int i=0; i<num_blocks; ++i)
+		{
+			float calc_distance = f_memory_ptr[start_unit + aligned_unit * i + 2];
+			if (calc_distance > 0.0f && calc_distance < new_best_dist)
+			{
+				new_best_dist = calc_distance;
+				best_index = i; 
+			}
+		}
+
+		if (best_index != -1)
+		{
+			// apply the swap
+			int& swap_b = memory_block[start_unit + aligned_unit * best_index];
+			int& swap_a = memory_block[start_unit + aligned_unit * best_index + 1];
 			
-			default:
-				// Copy best path and distance to current path
-				copy<<<num_blocks_copy, BLOCK_SIZE>>>(
-					memory_block,
-					&memory_block[(ALIGNED_UNIT_SIZE/sizeof(int)) * best_index],
-					ALIGNED_UNIT_SIZE / sizeof(int)
-				);
-				
-				// Wait for child grid to terminate
-				cudaDeviceSynchronize();
-			
-			case -1:
-				
-				// save previous calculated distance
-				old_best_dist = new_best_dist;
-
-				// Launch kernel that computes paths and distances
-				cuda_calculate_opts<<<num_blocks, BLOCK_SIZE, sizeof(SharedMem)>>>(
-					device_cities,
-					memory_block,
-					initial_idx
-				);
-
-				// Wait for child grid to terminate
-				cudaDeviceSynchronize();
-
-				cudaError_t err_code = cudaGetLastError();
-				if (err_code)
-				{
-					return;
-				}
-
-				// retrieve best calculated distance amongst various blocks
-				for (int i=1; i<num_blocks+1; ++i)
-				{
-					float calc_distance = f_memory_ptr[(ALIGNED_UNIT_SIZE/sizeof(int)) * i + (NUM_CITIES+1)];
-					if (calc_distance > 0.0f && calc_distance < new_best_dist)
-					{
-						new_best_dist = calc_distance;
-						best_index = i; 
-					}
-				}
+			int temp = memory_block[swap_a];
+			memory_block[swap_a] = memory_block[swap_b];
+			memory_block[swap_b] = temp;
 		}
 	}
 
@@ -461,11 +416,13 @@ int main(void)
 	}
 
 	// Calculate number of blocks necessary
-	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	constexpr int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
 	
-	// Calculate memory block size
-	size_t memory_block_size = ALIGNED_UNIT_SIZE * (num_blocks+1);
+	// Calculate memory block size:
+	// current_path + float_distance + (2 * swap_indices + float_distance) * number_of_blocks
+	constexpr size_t memory_block_size = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) + 
+		ALIGN(sizeof(int) * 2 + sizeof(float)) * num_blocks;
 
 	// Allocate memory
 	cudaMalloc((void**) &memory_block,
@@ -543,7 +500,7 @@ int main(void)
 
     // Copy best distance from GPU into best_dist
   	err_code = cudaMemcpy(&best_dist,
-  		memory_block + NUM_CITIES + 1,
+  		memory_block + (NUM_CITIES+1),
   		sizeof(float),
   		cudaMemcpyDeviceToHost
   	);
