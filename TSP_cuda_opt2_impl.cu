@@ -196,13 +196,13 @@ __global__ void cuda_calculate_opts(
 	}
 
 
-	extern __shared__ SharedMem block_mem[];
+	__shared__ SharedMem block_mem{};
 
-	half* A = block_mem->arr1;
-	half* B = block_mem->arr2;
+	half* A = block_mem.arr1;
+	half* B = block_mem.arr2;
 	// RESULT MATRIX C IS A + B IN MEMORY TERMS
 	float* C = reinterpret_cast<float*>(block_mem->arr1);
-	int& lock = block_mem->lock;
+	int& lock = block_mem.lock;
 	
 	half cached_values[8];
 	int swap_a, swap_b;
@@ -319,7 +319,7 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 		old_best_dist = new_best_dist;
 
 		// Launch kernel that computes paths and distances
-		cuda_calculate_opts<<<num_blocks, BLOCK_SIZE, sizeof(SharedMem)>>>(
+		cuda_calculate_opts<<<num_blocks, BLOCK_SIZE>>>(
 			device_cities,
 			memory_block,
 			initial_idx
@@ -329,10 +329,7 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 		cudaDeviceSynchronize();
 
 		cudaError_t err_code = cudaPeekAtLastError();
-		if (err_code)
-		{
-			return;
-		}
+		assert(err_code == cudaSuccess);
 
 		// retrieve best calculated distance amongst various blocks
 		int best_index = -1;
@@ -376,12 +373,6 @@ int main(void)
 
 	// Build the data structure
 	build_cities(GENERATION_SEED);
-
-	// Increase the amount of shared memory that the kernel can use
-	err_code = cudaFuncSetAttribute(
-        cuda_calculate_opts,
-        cudaFuncAttributeMaxDynamicSharedMemorySize,
-		sizeof(SharedMem));
 
 	if (err_code)
 	{
