@@ -132,18 +132,6 @@ __inline__ __device__ void unlock(int* mutex)
 	(void) atomicExch(mutex, 0);
 }
 
-template <typename TYPE>
-__global__ void copy(TYPE* dest, const TYPE* src, size_t count)
-{
-	int tid = threadIdx.x + (blockIdx.x * blockDim.x);
-	if (tid < count)
-	{
-		dest[tid] = src[tid];
-	}
-	
-	return;
-}
-
 struct __align__(32) SharedMem
 {
 	half arr1[BLOCK_SIZE * STRIDE];
@@ -195,8 +183,8 @@ __global__ void cuda_calculate_opts(
 	int initial_idx)
 {
 
-	constexpr int aligned_unit = ALIGN(sizeof(int) * 2 + sizeof(float)) / sizeof(int);
-	constexpr int start_unit = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) / sizeof(int);
+	const int aligned_unit = ALIGN(sizeof(int) * 2 + sizeof(float)) / sizeof(int);
+	const int start_unit = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) / sizeof(int);
 
 	// Thread identification
 	int tid = threadIdx.x + (blockIdx.x * blockDim.x);
@@ -232,7 +220,7 @@ __global__ void cuda_calculate_opts(
 	
 	// Get pointers to output indices and output distance
 	int* output = memory + start_unit + aligned_unit * blockIdx.x;
-	float* f_output_distance = reinterpret_cast<float*>(output_path) + 2;
+	float* f_output_distance = reinterpret_cast<float*>(output) + 2;
 	
 	// Calculate the swap indices for this thread:
 	calculate_swap_indices(&swap_b, &swap_a, tid);
@@ -315,13 +303,13 @@ __global__ void cuda_calculate_opts(
 __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_idx)
 {
 
-	constexpr int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
-	constexpr int aligned_unit = ALIGN(sizeof(int) * 2 + sizeof(float)) / sizeof(int);
-	constexpr int start_unit = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) / sizeof(int);
+	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	const int aligned_unit = ALIGN(sizeof(int) * 2 + sizeof(float)) / sizeof(int);
+	const int start_unit = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) / sizeof(int);
 
 	float* f_memory_ptr = reinterpret_cast<float*>(memory_block);
 
-	float new_best_dist = *f_memory_ptr;
+	float new_best_dist = f_memory_ptr[NUM_CITIES + 1];
 	float old_best_dist = new_best_dist + 10.0f;
 	
 	while (new_best_dist < old_best_dist) 
@@ -424,12 +412,12 @@ int main(void)
 	}
 
 	// Calculate number of blocks necessary
-	constexpr int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	const int num_blocks = (NUM_OPTS + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
 	
 	// Calculate memory block size:
 	// current_path + float_distance + (2 * swap_indices + float_distance) * number_of_blocks
-	constexpr size_t memory_block_size = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) + 
+	const size_t memory_block_size = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) + 
 		ALIGN(sizeof(int) * 2 + sizeof(float)) * num_blocks;
 
 	// Allocate memory
