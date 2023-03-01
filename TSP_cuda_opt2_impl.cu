@@ -891,12 +891,6 @@ int main(void)
 	// Build the data structure
 	build_cities(GENERATION_SEED);
 
-	if (err_code)
-	{
-		printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
-		return -1;
-	}
-
 	// Allocate device cities
 	err_code = cudaMalloc(&device_cities, BUFFER_LEN * sizeof(__half));
 
