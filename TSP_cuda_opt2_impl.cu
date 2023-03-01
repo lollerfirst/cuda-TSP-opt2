@@ -196,12 +196,12 @@ __global__ void cuda_calculate_opts(
 	}
 
 
-	__shared__ SharedMem block_mem{};
+	__shared__ SharedMem block_mem;
 
 	half* A = block_mem.arr1;
 	half* B = block_mem.arr2;
 	// RESULT MATRIX C IS A + B IN MEMORY TERMS
-	float* C = reinterpret_cast<float*>(block_mem->arr1);
+	float* C = reinterpret_cast<float*>(block_mem.arr1);
 	int& lock = block_mem.lock;
 	
 	half cached_values[8];
