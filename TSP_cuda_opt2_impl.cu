@@ -340,7 +340,7 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 		// Wait for child grid to terminate
 		cudaDeviceSynchronize();
 
-		cudaError_t err_code = cudaGetLastError();
+		cudaError_t err_code = cudaPeekAtLastError();
 		if (err_code)
 		{
 			return;
@@ -390,10 +390,16 @@ int main(void)
 	build_cities(GENERATION_SEED);
 
 	// Increase the amount of shared memory that the kernel can use
-	cudaFuncSetAttribute(
+	err_code = cudaFuncSetAttribute(
         cuda_calculate_opts,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
 		sizeof(SharedMem));
+
+	if (err_code)
+	{
+		printf("[!] Cuda Error at line %d: %s\n", __LINE__, cudaGetErrorName(err_code));
+		return -1;
+	}
 
 	// Allocate device cities
 	err_code = cudaMalloc(&device_cities, BUFFER_LEN * sizeof(__half));
