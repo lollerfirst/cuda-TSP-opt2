@@ -133,7 +133,7 @@ __inline__ __device__ void unlock(int* mutex)
 	(void) atomicExch(mutex, 0);
 }
 
-struct __align__(32) SharedMem
+struct __align__(32) PackedMemory
 {
 	half arr1[BLOCK_SIZE * STRIDE];
 	half arr2[BLOCK_SIZE * STRIDE];
@@ -197,13 +197,13 @@ __global__ void cuda_calculate_opts(
 	}
 
 
-	__shared__ SharedMem block_mem;
+	extern __shared__ PackedMemory block_mem[];
 
-	half* A = block_mem.arr1;
-	half* B = block_mem.arr2;
+	half* A = block_mem->arr1;
+	half* B = block_mem->arr2;
 	// RESULT MATRIX C IS A + B IN MEMORY TERMS
-	float* C = reinterpret_cast<float*>(block_mem.arr1);
-	int& lock = block_mem.lock;
+	float* C = reinterpret_cast<float*>(block_mem->arr1);
+	int& lock = block_mem->lock;
 	
 	half cached_values[8];
 	int swap_a, swap_b;
@@ -320,7 +320,7 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 		old_best_dist = new_best_dist;
 
 		// Launch kernel that computes paths and distances
-		cuda_calculate_opts<<<num_blocks, BLOCK_SIZE>>>(
+		cuda_calculate_opts<<<num_blocks, BLOCK_SIZE, sizeof(PackedMemory)>>>(
 			device_cities,
 			memory_block,
 			initial_idx
@@ -457,6 +457,13 @@ int main(void)
         
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
+
+	// Increase maximum shared memory limit
+	cudaFuncSetAttribute(
+		cuda_calculate_opts,
+		cudaFuncAttributeMaxDynamicSharedMemorySize,
+		sizeof(PackedMemory)
+	);
 
   	// Call the control thread
   	cuda_opt2<<<1, 1>>>(device_cities, memory_block, 0);        

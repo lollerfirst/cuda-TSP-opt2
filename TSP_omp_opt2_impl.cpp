@@ -217,7 +217,7 @@ int main(void)
   	
   	for (std::size_t i=0; i<NUM_CITIES; ++i)
   	{
-  		std::cout << current_path[i] << "\n";
+  		std::cout << current_path[i] << "\t";
   	}
   	std::cout << "\n";
 
@@ -234,7 +234,7 @@ int main(void)
     std::cout << "Opt-2 best distance: " << distance << "\nOpt-2 path:\n";
     for (std::size_t i=0; i<NUM_CITIES; ++i)
     {
-        std::cout << current_path[i] << "\n";
+        std::cout << current_path[i] << "\t";
     }
     std::cout << "\n";
 
