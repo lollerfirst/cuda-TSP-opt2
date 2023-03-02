@@ -211,7 +211,7 @@ __global__ void cuda_calculate_opts(
 	float distance;
 
 	// Fragments  
-	nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::row_major> a_frag;
+	nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::col_major> a_frag;
 	nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half, nvcuda::wmma::row_major> b_frag;
 	nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, float> c_frag;
 
@@ -255,7 +255,7 @@ __global__ void cuda_calculate_opts(
 	nvcuda::wmma::store_matrix_sync(C + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), c_frag, STRIDE, nvcuda::wmma::mem_row_major);
 
 	// Retrieve corresponding accumulated value, which is on the diagonal of the matrix
-	((threadIdx.x % 32) < 16) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % 16] : 0;
+	((threadIdx.x % WARP_SIZE) < WARP_SIZE / 2) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % (WARP_SIZE / 2)] : 0;
 	
 	// Reload A and B
 	load_matrix_a(A, device_cities, cached_values);
@@ -273,7 +273,7 @@ __global__ void cuda_calculate_opts(
 	nvcuda::wmma::store_matrix_sync(C + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), c_frag, STRIDE, nvcuda::wmma::mem_row_major);
 
 	// Each thread reads his own cell of the diagonal of B
-	((threadIdx.x % 32) >= 16) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % 16] : 0;
+	((threadIdx.x % WARP_SIZE) >= WARP_SIZE / 2) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % (WARP_SIZE / 2)] : 0;
 
 	// initialize calculated distance with 0 ~~ default value/not improved
 	*f_output_distance = 0.0f;
