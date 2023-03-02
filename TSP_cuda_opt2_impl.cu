@@ -372,6 +372,12 @@ int main(void)
 	// Errors
 	cudaError_t err_code;
 
+	// Get device information
+	int max_shared_mem_size;
+	cudaDeviceGetAttribute(&max_shared_mem_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
+	printf("Maximum shared memory size per block: %d bytes\n", max_shared_mem_size);
+
+
 	// Build the data structure
 	build_cities(GENERATION_SEED);
 
