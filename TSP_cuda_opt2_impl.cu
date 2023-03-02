@@ -18,7 +18,7 @@
 
 #define MAX_DISTANCE 3267
 #define MEM_ALIGNMENT 32
-#define BLOCK_SIZE 1024
+#define BLOCK_SIZE 512
 #define WARP_SIZE 32
 #define STRIDE 16
 
@@ -197,13 +197,13 @@ __global__ void cuda_calculate_opts(
 	}
 
 
-	extern __shared__ PackedMemory block_mem[];
+	__shared__ PackedMemory block_mem;
 
-	half* A = block_mem->arr1;
-	half* B = block_mem->arr2;
+	half* A = block_mem.arr1;
+	half* B = block_mem.arr2;
 	// RESULT MATRIX C IS A + B IN MEMORY TERMS
-	float* C = reinterpret_cast<float*>(block_mem->arr1);
-	int& lock = block_mem->lock;
+	float* C = reinterpret_cast<float*>(block_mem.arr1);
+	int& lock = block_mem.lock;
 	
 	half cached_values[8];
 	int swap_a, swap_b;
@@ -320,7 +320,7 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 		old_best_dist = new_best_dist;
 
 		// Launch kernel that computes paths and distances
-		cuda_calculate_opts<<<num_blocks, BLOCK_SIZE, sizeof(PackedMemory)>>>(
+		cuda_calculate_opts<<<num_blocks, BLOCK_SIZE>>>(
 			device_cities,
 			memory_block,
 			initial_idx
@@ -372,11 +372,12 @@ int main(void)
 	// Errors
 	cudaError_t err_code;
 
+	/*
 	// Get device information
 	int max_shared_mem_size;
 	cudaDeviceGetAttribute(&max_shared_mem_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
 	printf("Maximum shared memory size per block: %d bytes\n", max_shared_mem_size);
-
+	*/
 
 	// Build the data structure
 	build_cities(GENERATION_SEED);
@@ -463,13 +464,6 @@ int main(void)
         
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
-
-	// Increase maximum shared memory limit
-	cudaFuncSetAttribute(
-		cuda_calculate_opts,
-		cudaFuncAttributeMaxDynamicSharedMemorySize,
-		sizeof(PackedMemory)
-	);
 
   	// Call the control thread
   	cuda_opt2<<<1, 1>>>(device_cities, memory_block, 0);        
