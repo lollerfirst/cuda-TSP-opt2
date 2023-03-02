@@ -184,10 +184,11 @@ __global__ void cuda_calculate_opts(
 	int initial_idx)
 {
 
+	// Constants we need to calculate pointers further on
 	const int aligned_unit = ALIGN(sizeof(int) * 2 + sizeof(float)) / sizeof(int);
 	const int start_unit = ALIGN(sizeof(int) * (NUM_CITIES+1) + sizeof(float)) / sizeof(int);
 
-	// Thread identification
+	// Lane identification
 	int tid = threadIdx.x + (blockIdx.x * blockDim.x);
 	
 	// Boundaries control
@@ -201,7 +202,6 @@ __global__ void cuda_calculate_opts(
 
 	half* A = block_mem.arr1;
 	half* B = block_mem.arr2;
-	// RESULT MATRIX C IS A + B IN MEMORY TERMS
 	float* C = reinterpret_cast<float*>(block_mem.arr1);
 	int& lock = block_mem.lock;
 	
@@ -223,7 +223,7 @@ __global__ void cuda_calculate_opts(
 	int* output = memory + start_unit + aligned_unit * blockIdx.x;
 	float* f_output_distance = reinterpret_cast<float*>(output) + 2;
 	
-	// Calculate the swap indices for this thread:
+	// Calculate the swap indices for this lane:
 	calculate_swap_indices(&swap_b, &swap_a, tid);
 
 	distance = *f_current_distance;
@@ -275,27 +275,46 @@ __global__ void cuda_calculate_opts(
 	// Each thread reads his own cell of the diagonal of B
 	((threadIdx.x % WARP_SIZE) >= WARP_SIZE / 2) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % (WARP_SIZE / 2)] : 0;
 
+	// Shuffle down to the first lane of the warp all the values of distance and swap indices.
+	// Each lane is receiveing and passing down messages to another lane and evaluating whether to update its own
+	#pragma unroll
+	for (int offset=WARP_SIZE/2; offset > 0; offset /= 2)
+	{
+		int alt_swap_b, alt_swap_a;
+		float alt_distance = 0.0f;
+		alt_distance += __shfl_down_sync(__activemask(), distance, offset, WARP_SIZE);
+		alt_swap_b = __shfl_down_sync(__activemask(), swap_b, offset, WARP_SIZE);
+		alt_swap_a = __shfl_down_sync(__activemask(), swap_a, offset, WARP_SIZE);
+
+		// update distance if its lower
+		distance = (alt_distance != 0.0f) * (alt_distance < distance) * alt_distance + (alt_distance >= distance) * distance;
+		swap_b = (alt_distance < distance) * alt_swap_b + (alt_distance >= distance) * swap_b;
+		swap_a = (alt_distance < distance) * alt_swap_a + (alt_distance >= distance) * swap_a;
+	}
+	
 	// initialize calculated distance with 0 ~~ default value/not improved
 	*f_output_distance = 0.0f;
 
 	// Block-wide sync
 	__syncthreads();
 
-	// Acquire the lock
-	while (trylock(&lock) == false);
-	
-	if (distance < (*f_current_distance) &&
-		((*f_output_distance) == 0.0f || distance < (*f_output_distance)))
+	// Only the leading lane updates the value ~~ decrease dramatically number of mutually exclusive accesses
+	if (threadIdx.x % WARP_SIZE == 0)
 	{
-		*f_output_distance = distance;
-	
-		output[0] = swap_b;
-		output[1] = swap_a;
-	}	
-	
-	// Release the lock
-	unlock(&lock);
-	__syncwarp();
+		while (trylock(&lock) == false);
+
+		if (distance < (*f_current_distance) &&
+			((*f_output_distance) == 0.0f || distance < (*f_output_distance)))
+		{
+			*f_output_distance = distance;
+
+			output[0] = swap_b;
+			output[1] = swap_a;
+		}	
+
+		// Release the lock
+		unlock(&lock);
+	}
 	
 	return;
 }
