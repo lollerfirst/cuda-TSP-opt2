@@ -149,7 +149,7 @@ __device__ __inline__ void load_matrix_a(half* A, half* device_cities, half* cac
 	}
 
     // convert to negatives the first 4 values
-    long* tmp = reinterpret_cast<long*>(cached_values);
+    long* tmp = reinterpret_cast<long*>(A + threadIdx.x * STRIDE);
     *tmp |= 0x8000800080008000;
 
 	#pragma unroll
