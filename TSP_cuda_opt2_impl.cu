@@ -247,7 +247,7 @@ __global__ void cuda_calculate_opts(
 	load_matrix_a(A, device_cities, cached_values);
 
 	// Load tensor core registers: second half of warp.
-	nvcuda::wmma::load_matrix_sync(a_frag, A + (((threadIdx.x & 0xFFFFFFE0) + 16) * STRIDE), STRIDE);
+	nvcuda::wmma::load_matrix_sync(a_frag, A + (((threadIdx.x & 0xFFFFFFE0) + (WARP_SIZE/2)) * STRIDE), STRIDE);
 	nvcuda::wmma::fill_fragment(b_frag, 1.0f);
 	nvcuda::wmma::fill_fragment(c_frag, 0.0f);
 
