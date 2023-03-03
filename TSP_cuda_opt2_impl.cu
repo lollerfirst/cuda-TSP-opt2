@@ -157,23 +157,11 @@ __device__ __inline__ void load_matrix_a(half* A, half* device_cities, half* cac
 	{
 		A[threadIdx.x * STRIDE + i] = cached_values[i];
 	}
-}
-
-__device__ __inline__ void load_matrix_b(half* B, half truth_1, half truth_2)
-{
-	B[threadIdx.x * STRIDE] = 0x3C00;
-	B[threadIdx.x * STRIDE + 1] = truth_1;
-	B[threadIdx.x * STRIDE + 2] = truth_2;
-	B[threadIdx.x * STRIDE + 3] = 0x3C00;
-	B[threadIdx.x * STRIDE + 4] = 0x3C00;
-	B[threadIdx.x * STRIDE + 5] = truth_1;
-	B[threadIdx.x * STRIDE + 6] = truth_2;
-	B[threadIdx.x * STRIDE + 7] = 0x3C00;
 
 	#pragma unroll
-	for (int i=8; i<STRIDE; ++i)
+	for (int i=8; i<16; ++i)
 	{
-		B[threadIdx.x * STRIDE + i] = 0x0000;
+		A[threadIdx.x * STRIDE + i] = 0x0000;
 	}
 }
 
@@ -201,7 +189,6 @@ __global__ void cuda_calculate_opts(
 	__shared__ PackedMemory block_mem;
 
 	half* A = block_mem.arr1;
-	half* B = block_mem.arr2;
 	float* C = reinterpret_cast<float*>(block_mem.arr1);
 	int& lock = block_mem.lock;
 	
@@ -225,10 +212,7 @@ __global__ void cuda_calculate_opts(
 	
 	// Calculate the swap indices for this lane:
 	calculate_swap_indices(&swap_b, &swap_a, tid);
-
-	distance = *f_current_distance;
-	truth_1 = __int2half_rn(swap_b + 1 != swap_a);
-	truth_2 = __int2half_rn(swap_a - 1 != swap_b);
+	
 	
 	// Cache distances because we reload A and B multiple times
 	cached_values[0] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])];
@@ -240,12 +224,12 @@ __global__ void cuda_calculate_opts(
 	cached_values[6] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_b])];
 	cached_values[7] = device_cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
 	
+	// Load A
 	load_matrix_a(A, device_cities, cached_values);
-	load_matrix_b(B, truth_1, truth_2);
 	
 	// Load tensor core registers: first half of warp
 	nvcuda::wmma::load_matrix_sync(a_frag, A + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), STRIDE);
-	nvcuda::wmma::load_matrix_sync(b_frag, B + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), STRIDE);
+	nvcuda::wmma::fill_fragment(b_frag, 1.0f);
 	nvcuda::wmma::fill_fragment(c_frag, 0.0f);
 
 	// Perform fused multiply add
@@ -254,25 +238,24 @@ __global__ void cuda_calculate_opts(
 	// Store result into C
 	nvcuda::wmma::store_matrix_sync(C + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), c_frag, STRIDE, nvcuda::wmma::mem_row_major);
 
-	// Retrieve corresponding accumulated value, which is on the diagonal of the matrix
+	// Each thread reads his own cell of the diagonal of C
 	((threadIdx.x % WARP_SIZE) < WARP_SIZE / 2) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % (WARP_SIZE / 2)] : 0;
 	
-	// Reload A and B
+	// Reload A
 	load_matrix_a(A, device_cities, cached_values);
-	load_matrix_b(B, truth_1, truth_2);
 
 	// Load tensor core registers: second half of warp.
 	nvcuda::wmma::load_matrix_sync(a_frag, A + (((threadIdx.x & 0xFFFFFFE0) + 16) * STRIDE), STRIDE);
-	nvcuda::wmma::load_matrix_sync(b_frag, B + (((threadIdx.x & 0xFFFFFFE0) + 16) * STRIDE), STRIDE);
+	nvcuda::wmma::fill_fragment(b_frag, 1.0f);
 	nvcuda::wmma::fill_fragment(c_frag, 0.0f);
 
-	// Perform fused multiply add
+	// Perform matrix multiplication
 	nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
 
 	// Store result into B
 	nvcuda::wmma::store_matrix_sync(C + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), c_frag, STRIDE, nvcuda::wmma::mem_row_major);
 
-	// Each thread reads his own cell of the diagonal of B
+	// Each thread reads his own cell of the diagonal of C
 	((threadIdx.x % WARP_SIZE) >= WARP_SIZE / 2) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % (WARP_SIZE / 2)] : 0;
 
 	// Shuffle down to the first lane of the warp all the values of distance and swap indices.
