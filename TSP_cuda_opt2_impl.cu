@@ -210,6 +210,8 @@ __global__ void cuda_calculate_opts(
 	int* output = memory + start_unit + aligned_unit * blockIdx.x;
 	float* f_output_distance = reinterpret_cast<float*>(output) + 2;
 	
+	distance = *f_current_distance;
+
 	// Calculate the swap indices for this lane:
 	calculate_swap_indices(&swap_b, &swap_a, tid);
 	
