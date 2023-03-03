@@ -260,6 +260,8 @@ __global__ void cuda_calculate_opts(
 	// Each thread reads his own cell of the diagonal of C
 	((threadIdx.x % WARP_SIZE) >= WARP_SIZE / 2) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % (WARP_SIZE / 2)] : 0;
 
+	__syncwarp();
+
 	// Shuffle down to the first lane of the warp all the values of distance and swap indices.
 	// Each lane is receiveing and passing down messages to another lane and evaluating whether to update its own
 	#pragma unroll
