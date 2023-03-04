@@ -140,6 +140,8 @@ struct __align__(32) PackedMemory
 	int lock;
 };
 
+// Loads matrix A with -(b-1 -> b), -(b -> b+1), -(a-1 -> a), -(a -> a+1)
+// (b-1 -> a), (a -> b+1), (a-1 -> b), (b -> a+1)
 __device__ __inline__ void load_matrix_a(half* A, half* cached_values)
 {
 	#pragma unroll
