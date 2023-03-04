@@ -28,7 +28,7 @@
 #define ALIGN(__X) ((((__X) / MEM_ALIGNMENT) + 1) * MEM_ALIGNMENT)
 
 // Distance matrix represented in compressed form
-static __half cities[BUFFER_LEN];
+static half cities[BUFFER_LEN];
 
 // indexes the compressed sparse matrix holding the distances
 __inline__ __host__ __device__ size_t triu_index(const int i, const int j)
@@ -140,7 +140,7 @@ struct __align__(32) PackedMemory
 	int lock;
 };
 
-__device__ __inline__ void load_matrix_a(half* A, half* device_cities, half* cached_values)
+__device__ __inline__ void load_matrix_a(half* A, half* cached_values)
 {
 	#pragma unroll
 	for (int i=0; i<4; ++i)
@@ -227,7 +227,7 @@ __global__ void cuda_calculate_opts(
 	cached_values[7] = device_cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
 	
 	// Load A
-	load_matrix_a(A, device_cities, cached_values);
+	load_matrix_a(A, cached_values);
 	
 	// Load tensor core registers: first half of warp
 	nvcuda::wmma::load_matrix_sync(a_frag, A + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), STRIDE);
@@ -244,7 +244,7 @@ __global__ void cuda_calculate_opts(
 	((threadIdx.x % WARP_SIZE) < WARP_SIZE / 2) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % (WARP_SIZE / 2)] : 0;
 	
 	// Reload A
-	load_matrix_a(A, device_cities, cached_values);
+	load_matrix_a(A, cached_values);
 
 	// Load tensor core registers: second half of warp.
 	nvcuda::wmma::load_matrix_sync(a_frag, A + (((threadIdx.x & 0xFFFFFFE0) + (WARP_SIZE/2)) * STRIDE), STRIDE);
@@ -368,6 +368,14 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 	return;
 }
 
+void print_cities()
+{
+	fprintf(stdout, "Cities:\n");
+	for (int i=0; i<BUFFER_LEN; ++i)
+	{
+		fprintf(stdout, "%f\t", __half2float(cities[i]));
+	}
+}
 
 int main(void)
 {
@@ -378,15 +386,11 @@ int main(void)
 	// Errors
 	cudaError_t err_code;
 
-	/*
-	// Get device information
-	int max_shared_mem_size;
-	cudaDeviceGetAttribute(&max_shared_mem_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
-	printf("Maximum shared memory size per block: %d bytes\n", max_shared_mem_size);
-	*/
-
 	// Build the data structure
 	build_cities(GENERATION_SEED);
+
+	// Print cities
+	print_cities();
 
 	// Allocate device cities
 	err_code = cudaMalloc(&device_cities, BUFFER_LEN * sizeof(__half));
