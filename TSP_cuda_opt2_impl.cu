@@ -31,7 +31,7 @@
 static half cities[BUFFER_LEN];
 
 // indexes the compressed sparse matrix holding the distances
-__inline__ __host__ __device__ size_t triu_index(const int i, const int j)
+__inline__ __host__ __device__ int triu_index(const int i, const int j)
 {
 	const int side_i = NUM_CITIES - (i+1);
 	const int side_j = NUM_CITIES - (j+1);
@@ -60,7 +60,7 @@ void build_cities(unsigned int seed)
 	for (i=0; i<BUFFER_LEN; ++i)
 	{	
 
-		cities[i] = __int2half_rn(rand() % MAX_DISTANCE);
+		cities[i] = __int2half_rd(rand() % MAX_DISTANCE);
 	}
 }
 
@@ -142,23 +142,20 @@ struct __align__(32) PackedMemory
 
 // Loads matrix A with -(b-1 -> b), -(b -> b+1), -(a-1 -> a), -(a -> a+1)
 // (b-1 -> a), (a -> b+1), (a-1 -> b), (b -> a+1)
-__device__ __inline__ void load_matrix_a(half* A, half* cached_values)
+__device__ __inline__ void load_matrix_a(half* A, half* device_cities, int* current_path, int swap_a, int swap_b)
 {
-	#pragma unroll
-	for (int i=0; i<4; ++i)
-	{
-		A[threadIdx.x * STRIDE + i] = cached_values[i];
-	}
+	A[threadIdx.x * STRIDE] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])];
+	A[threadIdx.x * STRIDE + 1] = device_cities[triu_index(current_path[swap_b], current_path[swap_b+1])];
+	A[threadIdx.x * STRIDE + 2] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_a])];
+	A[threadIdx.x * STRIDE + 3] = device_cities[triu_index(current_path[swap_a], current_path[swap_a+1])];
+	A[threadIdx.x * STRIDE + 4] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_a])];
+	A[threadIdx.x * STRIDE + 5] = device_cities[triu_index(current_path[swap_a], current_path[swap_b+1])];
+	A[threadIdx.x * STRIDE + 6] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_b])];
+	A[threadIdx.x * STRIDE + 7] = device_cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
 
     // convert to negatives the first 4 values
     long* tmp = reinterpret_cast<long*>(A + threadIdx.x * STRIDE);
     *tmp |= 0x8000800080008000;
-
-	#pragma unroll
-	for (int i=4; i<8; ++i)
-	{
-		A[threadIdx.x * STRIDE + i] = cached_values[i];
-	}
 
 	#pragma unroll
 	for (int i=8; i<16; ++i)
@@ -180,13 +177,6 @@ __global__ void cuda_calculate_opts(
 
 	// Lane identification
 	int tid = threadIdx.x + (blockIdx.x * blockDim.x);
-	
-	// Boundaries control
-	if (tid >= NUM_OPTS)
-	{
-		return;
-	}
-
 
 	__shared__ PackedMemory block_mem;
 
@@ -194,9 +184,7 @@ __global__ void cuda_calculate_opts(
 	float* C = reinterpret_cast<float*>(block_mem.arr1);
 	int& lock = block_mem.lock;
 	
-	half cached_values[8];
 	int swap_a, swap_b;
-	half truth_1, truth_2;
 	float distance;
 
 	// Fragments  
@@ -216,20 +204,12 @@ __global__ void cuda_calculate_opts(
 
 	// Calculate the swap indices for this lane:
 	calculate_swap_indices(&swap_b, &swap_a, tid);
-	
-	
-	// Cache distances because we reload A and B multiple times
-	cached_values[0] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])];
-	cached_values[1] = device_cities[triu_index(current_path[swap_b], current_path[swap_b+1])];
-	cached_values[2] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_a])];
-	cached_values[3] = device_cities[triu_index(current_path[swap_a], current_path[swap_a+1])];
-	cached_values[4] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_a])];
-	cached_values[5] = device_cities[triu_index(current_path[swap_a], current_path[swap_b+1])];
-	cached_values[6] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_b])];
-	cached_values[7] = device_cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
-	
-	// Load A
-	load_matrix_a(A, cached_values);
+
+	if (tid < NUM_OPTS)
+	{
+		// Load A
+		load_matrix_a(A, device_cities, current_path, swap_a, swap_b);
+	}
 	
 	// Load tensor core registers: first half of warp
 	nvcuda::wmma::load_matrix_sync(a_frag, A + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), STRIDE);
@@ -243,15 +223,16 @@ __global__ void cuda_calculate_opts(
 	nvcuda::wmma::store_matrix_sync(C + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), c_frag, STRIDE, nvcuda::wmma::mem_row_major);
 
 	// Each thread reads his own cell of the diagonal of C
-	((threadIdx.x % WARP_SIZE) < WARP_SIZE / 2) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % (WARP_SIZE / 2)] : 0;
+	distance += ((threadIdx.x % WARP_SIZE) < WARP_SIZE / 2) ? C[threadIdx.x * STRIDE] : 0;
 	
-	// Reload A
-	load_matrix_a(A, cached_values);
+	if (tid < NUM_OPTS)
+	{
+		// Reload A
+		load_matrix_a(A, device_cities, current_path, swap_a, swap_b);
+	}
 
 	// Load tensor core registers: second half of warp.
 	nvcuda::wmma::load_matrix_sync(a_frag, A + (((threadIdx.x & 0xFFFFFFE0) + (WARP_SIZE/2)) * STRIDE), STRIDE);
-	nvcuda::wmma::fill_fragment(b_frag, 1.0f);
-	nvcuda::wmma::fill_fragment(c_frag, 0.0f);
 
 	// Perform matrix multiplication
 	nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
@@ -260,9 +241,14 @@ __global__ void cuda_calculate_opts(
 	nvcuda::wmma::store_matrix_sync(C + ((threadIdx.x & 0xFFFFFFE0) * STRIDE), c_frag, STRIDE, nvcuda::wmma::mem_row_major);
 
 	// Each thread reads his own cell of the diagonal of C
-	((threadIdx.x % WARP_SIZE) >= WARP_SIZE / 2) ? distance += C[threadIdx.x * STRIDE + threadIdx.x % (WARP_SIZE / 2)] : 0;
+	distance += ((threadIdx.x % WARP_SIZE) >= WARP_SIZE / 2) ? C[(threadIdx.x-(WARP_SIZE/2)) * STRIDE] : 0;
 
 	__syncwarp();
+
+	if (tid >= NUM_OPTS)
+	{
+		return;
+	}
 
 	// Shuffle down to the first lane of the warp all the values of distance and swap indices.
 	// Each lane is receiveing and passing down messages to another lane and evaluating whether to update its own
@@ -270,15 +256,15 @@ __global__ void cuda_calculate_opts(
 	for (int offset=WARP_SIZE/2; offset > 0; offset /= 2)
 	{
 		int alt_swap_b, alt_swap_a;
-		float alt_distance = 0.0f;
-		alt_distance += __shfl_down_sync(__activemask(), distance, offset, WARP_SIZE);
+		float alt_distance;
+		alt_distance = __shfl_down_sync(__activemask(), distance, offset, WARP_SIZE);
 		alt_swap_b = __shfl_down_sync(__activemask(), swap_b, offset, WARP_SIZE);
 		alt_swap_a = __shfl_down_sync(__activemask(), swap_a, offset, WARP_SIZE);
 
 		// update distance if its lower
-		distance = (alt_distance != 0.0f) * (alt_distance < distance) * alt_distance + (alt_distance >= distance) * distance;
-		swap_b = (alt_distance < distance) * alt_swap_b + (alt_distance >= distance) * swap_b;
-		swap_a = (alt_distance < distance) * alt_swap_a + (alt_distance >= distance) * swap_a;
+		swap_b = (alt_distance < distance && alt_distance != 0.0f) * alt_swap_b + (alt_distance >= distance || alt_distance == 0.0f) * swap_b;
+		swap_a = (alt_distance < distance && alt_distance != 0.0f) * alt_swap_a + (alt_distance >= distance || alt_distance == 0.0f) * swap_a;
+		distance = (alt_distance < distance && alt_distance != 0.0f) * alt_distance + (alt_distance >= distance || alt_distance == 0.0f) * distance;
 	}
 	
 	// initialize calculated distance with 0 ~~ default value/not improved
@@ -355,8 +341,8 @@ __global__ void cuda_opt2(__half* device_cities, int* memory_block, int initial_
 		if (best_index != -1)
 		{
 			// apply the swap
-			int& swap_b = memory_block[start_unit + aligned_unit * best_index];
-			int& swap_a = memory_block[start_unit + aligned_unit * best_index + 1];
+			int swap_b = memory_block[start_unit + aligned_unit * best_index];
+			int swap_a = memory_block[start_unit + aligned_unit * best_index + 1];
 			
 			int temp = memory_block[swap_a];
 			memory_block[swap_a] = memory_block[swap_b];

@@ -197,6 +197,16 @@ void opt2(int* current_path, const int initial_idx)
     }
 }
 
+void print_cities()
+{
+	fprintf(stdout, "Cities:\n");
+	for (int i=0; i<BUFFER_LEN; ++i)
+	{
+		fprintf(stdout, "%d\t", cities[i]);
+	}
+    fprintf(stdout, "\n");
+}
+
 int main(void)
 {
     int *current_path;
@@ -210,33 +220,37 @@ int main(void)
     }
 
     build_cities(GENERATION_SEED);
+
+    // print cities
+    print_cities();
+    
     int distance = greedy_path_dist(current_path, 0);
     current_path[NUM_CITIES] = distance;
 
-    std::cout << "Greedy best distance: " << distance << "\nGreedy path:\n";
+    fprintf(stdout, "Greedy best distance: %d \nGreedy path:\n", distance);
   	
   	for (std::size_t i=0; i<NUM_CITIES; ++i)
   	{
-  		std::cout << current_path[i] << "\t";
+  		fprintf(stdout, "%d\t", current_path[i]);
   	}
-  	std::cout << "\n";
+  	fprintf(stdout, "\n");
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
     opt2(current_path, 0);
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 
     
-    std::cerr << "Total opt2 time = " << (end.tv_nsec - begin.tv_nsec) / 1000000000.0 +
-            (end.tv_sec  - begin.tv_sec) << " seconds\n";
+    fprintf(stderr, "Total opt2 time = %.9f seconds\n", (end.tv_nsec - begin.tv_nsec) / 1000000000.0 +
+            (end.tv_sec  - begin.tv_sec));
 
     distance = current_path[NUM_CITIES];
 
-    std::cout << "Opt-2 best distance: " << distance << "\nOpt-2 path:\n";
+    fprintf(stdout, "Opt2 best distance: %d \nOpt2 path:\n", distance);
     for (std::size_t i=0; i<NUM_CITIES; ++i)
-    {
-        std::cout << current_path[i] << "\t";
-    }
-    std::cout << "\n";
+  	{
+  		fprintf(stdout, "%d\t", current_path[i]);
+  	}
+  	fprintf(stdout, "\n");
 
     free(current_path);
 }
