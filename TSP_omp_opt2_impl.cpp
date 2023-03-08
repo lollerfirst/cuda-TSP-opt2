@@ -26,7 +26,7 @@
 #define BUFFER_LEN ((NUM_CITIES * (NUM_CITIES - 1)) / 2)
 #define NUM_OPTS (((NUM_CITIES * (NUM_CITIES - 3)) / 2) + 1)
 
-static int cities[BUFFER_LEN];
+static float cities[BUFFER_LEN];
 
 inline int triu_index(const int i, const int j)
 {
@@ -42,7 +42,8 @@ inline int triu_index(const int i, const int j)
 inline void calculate_swap_indices(int& swap_b, int& swap_a, const int index)
 {
 	swap_a = static_cast<int>((1.0f + sqrt(static_cast<double>(1+8*index))) / 2.0f);
-	swap_b = ((swap_a * (swap_a + 1)) / 2) - index - 1;
+	swap_b = ((swap_a * (swap_a + 1)) / 2) - index;
+    ++swap_a;
 }
 
 
@@ -53,81 +54,77 @@ void build_cities(unsigned int seed)
 	std::size_t i;
 	for (i=0; i<BUFFER_LEN; ++i)
 	{	
-		cities[i] = rand() % MAX_DISTANCE;
+		cities[i] = static_cast<float>(rand() % MAX_DISTANCE);
 	}
 }
 
-int greedy_path_dist(int* path, int initial_idx)
+float greedy_path_dist(int* path, int initial_idx)
 {
-	int distance = 0;
+	float distance = 0.0f;
 	int i;
-	int idx = initial_idx;
 	
 	bool visited_cities[NUM_CITIES] = {0};
 	
-	// Can't choose the initial before having ended the tour
+	path[0] = initial_idx;
 	visited_cities[initial_idx] = true;
 	
 	
 	// For every node in the path
-	for (i=0; i<NUM_CITIES; ++i)
+	for (i=1; i<NUM_CITIES+1; ++i)
 	{		
-		if (i != NUM_CITIES - 1)
+		if (i != NUM_CITIES)
 		{
-			int best_dist = INT_MAX;
-			int best_idx = INT_MAX;
+			float best_dist = MAX_DISTANCE+1;
+			int best_idx = 0;
 			int j;
 			
 			// For every possible link
 			for (j=0; j<NUM_CITIES; ++j)
 			{
-				if (idx != j &&
-					cities[triu_index(idx, j)] <= best_dist &&
+				float local_distance = cities[triu_index(path[i-1], j)];
+
+				if (path[i-1] != j &&
+					local_distance <= best_dist &&
 					!visited_cities[j])
 				{
-					best_dist = cities[triu_index(idx, j)];
+					best_dist = local_distance;
 					best_idx = j;
 				}
 			}
 			
-			if (best_idx == INT_MAX)
-			{
-				return -1;
-			}
-			
 			visited_cities[best_idx] = true;
 			path[i] = best_idx;
-			idx = best_idx;
-			distance += best_dist;
 		}
 		else
 		{
-			// LAST MUST BE the initial idx
 			path[i] = initial_idx;
-			distance += cities[triu_index(idx, initial_idx)];
 		}
+
+		distance += cities[triu_index(path[i-1], path[i])];
 	}
 	
 	return distance;
 }
 
-void opt2(int* current_path, const int initial_idx)
+void opt2(int* current_path)
 {
 
     constexpr std::size_t num_threads = (NUM_OPTS < MAX_THREADS) ? NUM_OPTS : MAX_THREADS;
     omp_set_num_threads(num_threads);
 
-    int new_best_distance, old_best_distance;
-    new_best_distance = current_path[NUM_CITIES];
-    old_best_distance = new_best_distance+1;
+    float new_best_distance, old_best_distance;
+    float* f_current_distance = reinterpret_cast<float*>(current_path + NUM_CITIES);
+    new_best_distance = *f_current_distance;
+    old_best_distance = new_best_distance + 10.0f;
     
     int output[3];
+    float* f_output_distance = reinterpret_cast<float*>(output + 2);
 
 
     while (new_best_distance < old_best_distance)
     {
         old_best_distance = new_best_distance;
-        output[2] = 0;
+        *f_output_distance = 0.0f;
 
         #pragma omp parallel for
         for (int i=0; i<NUM_OPTS; ++i)
@@ -136,16 +133,15 @@ void opt2(int* current_path, const int initial_idx)
 	        calculate_swap_indices(swap_b, swap_a, i);
             //fprintf(stderr, "i = %d, a = %d, b = %d\n", i, swap_a, swap_b);
 
-	        int distance = current_path[NUM_CITIES];
+	        float distance = *f_current_distance;
 
             // RECALCULATE DISTANCE:
             // subtract distance from swap_b - 1 to swap_b and from swap_b to swap_b + 1
             // subtract distance from swap_a - 1 to swap_a and from swap_a to swap_a + 1
             // If swap_b + 1 is swap_a and swap_a - 1 is swap_b, subtract 0.
-            distance -= (swap_b > 0) ? cities[triu_index(current_path[swap_b-1], current_path[swap_b])] : 0;
             
-            distance -= cities[triu_index(initial_idx, current_path[swap_b])]
-                * (swap_b == 0);
+            distance -= cities[triu_index(current_path[swap_b-1], current_path[swap_b])];
+
             distance -= cities[triu_index(current_path[swap_b], current_path[swap_b+1])]
                 * (swap_b + 1 != swap_a);
             distance -= cities[triu_index(current_path[swap_a-1], current_path[swap_a])]
@@ -155,10 +151,9 @@ void opt2(int* current_path, const int initial_idx)
             // add distance from swap_b - 1 to swap_a and from swap_a to swap_b + 1
             // add distance from swap_a - 1 to swap_b and from swap_b to swap_a + 1
             // If swap_b + 1 is swap_a and swap_a - 1 is swap_b, add 0.
-            distance += (swap_b > 0) ? cities[triu_index(current_path[swap_b-1], current_path[swap_a])] : 0;
             
-            distance += cities[triu_index(initial_idx, current_path[swap_a])]
-                * (swap_b == 0);
+            distance += cities[triu_index(current_path[swap_b-1], current_path[swap_a])];
+
             distance += cities[triu_index(current_path[swap_a], current_path[swap_b+1])]
                 * (swap_b + 1 != swap_a);
             distance += cities[triu_index(current_path[swap_a-1], current_path[swap_b])]
@@ -170,10 +165,10 @@ void opt2(int* current_path, const int initial_idx)
             {
                 // check if the calculated distance is better than the previously calculated one
                 // and better of any other threads' of this iteration
-                if (distance < current_path[NUM_CITIES] &&
-                    (output[2] == 0 || distance < output[2]))
+                if (distance < *f_current_distance &&
+                    (*f_output_distance == 0.0f || distance < *f_output_distance))
                 {
-                    output[2] = distance;
+                    *f_output_distance = distance;
 
                     output[0] = swap_b;
                     output[1] = swap_a;
@@ -183,10 +178,10 @@ void opt2(int* current_path, const int initial_idx)
 
         #pragma omp barrier
 
-        if (output[2] > 0 && output[2] < new_best_distance)
+        if (*f_output_distance > 0.0f && *f_output_distance < new_best_distance)
         {
-            new_best_distance = output[2];
-            current_path[NUM_CITIES] = output[2];
+            new_best_distance = *f_output_distance;
+            *f_current_distance = *f_output_distance;
 
             int& b = output[0];
             int& a = output[1];
@@ -225,28 +220,28 @@ int main(void)
     print_cities();
     
     int distance = greedy_path_dist(current_path, 0);
-    current_path[NUM_CITIES] = distance;
+    current_path[NUM_CITIES+1] = distance;
 
     fprintf(stdout, "Greedy best distance: %d \nGreedy path:\n", distance);
   	
-  	for (std::size_t i=0; i<NUM_CITIES; ++i)
+  	for (int i=0; i<NUM_CITIES+1; ++i)
   	{
   		fprintf(stdout, "%d\t", current_path[i]);
   	}
   	fprintf(stdout, "\n");
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
-    opt2(current_path, 0);
+    opt2(current_path);
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 
     
     fprintf(stderr, "Total opt2 time = %.9f seconds\n", (end.tv_nsec - begin.tv_nsec) / 1000000000.0 +
             (end.tv_sec  - begin.tv_sec));
 
-    distance = current_path[NUM_CITIES];
+    distance = current_path[NUM_CITIES+1];
 
     fprintf(stdout, "Opt2 best distance: %d \nOpt2 path:\n", distance);
-    for (std::size_t i=0; i<NUM_CITIES; ++i)
+    for (int i=0; i<NUM_CITIES+1; ++i)
   	{
   		fprintf(stdout, "%d\t", current_path[i]);
   	}
