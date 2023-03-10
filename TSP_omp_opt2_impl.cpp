@@ -21,7 +21,7 @@
 #define NUM_CITIES 100
 #endif
 
-#define MAX_DISTANCE 3267
+#define MAX_DISTANCE 100
 
 #define BUFFER_LEN ((NUM_CITIES * (NUM_CITIES - 1)) / 2)
 #define NUM_OPTS (((NUM_CITIES * (NUM_CITIES - 3)) / 2) + 1)
@@ -136,30 +136,39 @@ void opt2(int* current_path)
             //fprintf(stderr, "i = %d, a = %d, b = %d\n", i, swap_a, swap_b);
 
 	        T distance = *f_current_distance;
+            float cached_values[8];
+            cached_values[0] = cities[triu_index(current_path[swap_b-1], current_path[swap_b])];
+            cached_values[1] = cities[triu_index(current_path[swap_b], current_path[swap_b+1])];
+            cached_values[2] = cities[triu_index(current_path[swap_a-1], current_path[swap_a])];
+            cached_values[3] = cities[triu_index(current_path[swap_a], current_path[swap_a+1])];
+            cached_values[4] = cities[triu_index(current_path[swap_b-1], current_path[swap_a])];
+            cached_values[5] = cities[triu_index(current_path[swap_a], current_path[swap_b+1])];
+            cached_values[6] = cities[triu_index(current_path[swap_a-1], current_path[swap_b])];
+            cached_values[7] = cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
+
 
             // RECALCULATE DISTANCE:
             // subtract distance from swap_b - 1 to swap_b and from swap_b to swap_b + 1
             // subtract distance from swap_a - 1 to swap_a and from swap_a to swap_a + 1
             // If swap_b + 1 is swap_a and swap_a - 1 is swap_b, subtract 0.
             
-            distance -= cities[triu_index(current_path[swap_b-1], current_path[swap_b])]
-                + cities[triu_index(current_path[swap_b], current_path[swap_b+1])]
+            distance -= cached_values[0]
+                + cached_values[1]
                     * (swap_b + 1 != swap_a)
-                + cities[triu_index(current_path[swap_a-1], current_path[swap_a])]
+                + cached_values[2]
                     * (swap_b + 1 != swap_a)
-                + cities[triu_index(current_path[swap_a], current_path[swap_a+1])];
+                + cached_values[3];
             
             // add distance from swap_b - 1 to swap_a and from swap_a to swap_b + 1
             // add distance from swap_a - 1 to swap_b and from swap_b to swap_a + 1
             // If swap_b + 1 is swap_a and swap_a - 1 is swap_b, add 0.
             
-            distance += cities[triu_index(current_path[swap_b-1], current_path[swap_a])]
-                + cities[triu_index(current_path[swap_a], current_path[swap_b+1])]
+            distance += cached_values[4]
+                + cached_values[5]
                     * (swap_b + 1 != swap_a)
-                + cities[triu_index(current_path[swap_a-1], current_path[swap_b])]
-                    * (swap_a - 1 != swap_b)
-                + cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
-
+                + cached_values[6]
+                    * (swap_b + 1 != swap_a)
+                + cached_values[7];
 
             #pragma omp critical
             {
@@ -173,7 +182,17 @@ void opt2(int* current_path)
                     output[0] = swap_b;
                     output[1] = swap_a;
 
-                    fprintf(stderr, "[Thread %d] Found better distance: %.1f\n", i, distance);
+                    /*
+                    fprintf(stderr, "[Thread %d] Found better distance: %.1f\nSubtracting values:\
+                        swap indices: b=%d, a=%d\n", i, distance, swap_b, swap_a);
+                    
+                    for (int j=0; j<8; ++j)
+                    {
+                        fprintf(stderr, "%.1f\t", cached_values[j]);
+                    }
+
+                    fprintf(stderr, "\n\n");
+                    */
                 }
             }
         }
@@ -202,6 +221,19 @@ void print_cities()
 		fprintf(stdout, "%.1f\t", cities[i]);
 	}
     fprintf(stdout, "\n");
+}
+
+template <typename T>
+bool verify_result(int* path, T calc_distance)
+{
+	T distance = static_cast<T>(0);
+
+	for (int i=1; i<NUM_CITIES+1; ++i)
+	{
+		distance += (cities[triu_index(path[i-1], path[i])]);
+	}
+
+	return (fabsf(distance - calc_distance) <= 0.1f);
 }
 
 int main(void)
@@ -248,6 +280,9 @@ int main(void)
   		fprintf(stdout, "%d\t", current_path[i]);
   	}
   	fprintf(stdout, "\n");
+
+
+	(verify_result(current_path, distance)) ? printf("Result verification: true\n") : printf("Result verification: false\n");
 
     free(current_path);
 }
