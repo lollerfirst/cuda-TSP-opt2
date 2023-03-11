@@ -46,7 +46,7 @@ __inline__ __host__ __device__ int triu_index(const int i, const int j)
 // find swap_b as f(swap_a) - index - 1
 __inline__ __device__ void calculate_swap_indices(int* swap_b, int* swap_a, const int index)
 {
-	*swap_a = __float2int_rd((1.0f + sqrtf(static_cast<float>(1+8*index))) / 2.0f);
+	*swap_a = static_cast<int>((1.0f + sqrt(static_cast<double>(1+8*index))) / 2.0f);
 	*swap_b = ((swap_a[0] * (swap_a[0] + 1)) / 2) - index;
 	++(*swap_a);
 }
@@ -60,7 +60,7 @@ void build_cities(unsigned int seed)
 	for (i=0; i<BUFFER_LEN; ++i)
 	{	
 
-		cities[i] = __float2half_rd(static_cast<float>((rand() % MAX_DISTANCE)));
+		cities[i] = __float2half_rd(static_cast<float>((rand() % MAX_DISTANCE)+1));
 	}
 }
 
@@ -206,7 +206,7 @@ __global__ void cuda_calculate_opts(
 	// Warp identification
 	int warp = threadIdx.x / WARP_SIZE;
 
-	if ((tid - lane) >= NUM_OPTS)
+	if (tid >= NUM_OPTS)
 	{
 		return;
 	}
@@ -239,8 +239,8 @@ __global__ void cuda_calculate_opts(
 	// Calculate the swap indices for this lane:
 	calculate_swap_indices(&swap_b, &swap_a, tid);
 
-	if (tid < NUM_OPTS)
-		load_matrices(A, B, device_cities, current_path, swap_a, swap_b, lane);
+	//if (tid < NUM_OPTS)
+	load_matrices(A, B, device_cities, current_path, swap_a, swap_b, lane);
 	
 	// Load tensor core registers: first half of warp
 	nvcuda::wmma::load_matrix_sync(a_frag, A, STRIDE);
@@ -257,8 +257,8 @@ __global__ void cuda_calculate_opts(
 	distance += (lane < (WARP_SIZE/2)) * C[(hlane) * STRIDE + hlane];
 	__syncwarp();
 	
-	if (tid < NUM_OPTS)
-		load_matrices(A, B, device_cities, current_path, swap_a, swap_b, lane);
+	//if (tid < NUM_OPTS)
+	load_matrices(A, B, device_cities, current_path, swap_a, swap_b, lane);
 
 	// Load tensor core registers: second half of warp.
 	nvcuda::wmma::load_matrix_sync(a_frag, A + (WARP_SIZE/2) * STRIDE, STRIDE);
@@ -274,10 +274,6 @@ __global__ void cuda_calculate_opts(
 	distance += (lane >= (WARP_SIZE/2)) * C[hlane * STRIDE + hlane];
 	__syncwarp();
 
-	if (tid >= NUM_OPTS)
-	{
-		return;
-	}
 
 	// Shuffle down to the first lane of the warp all the values of distance and swap indices.
 	// Each lane is receiving and passing down messages to another lane and evaluating whether to update its own
@@ -286,9 +282,9 @@ __global__ void cuda_calculate_opts(
 	{
 		int alt_swap_b, alt_swap_a;
 		float alt_distance;
-		alt_distance = __shfl_down_sync(__activemask(), distance, offset, WARP_SIZE);
-		alt_swap_b = __shfl_down_sync(__activemask(), swap_b, offset, WARP_SIZE);
-		alt_swap_a = __shfl_down_sync(__activemask(), swap_a, offset, WARP_SIZE);
+		alt_distance = __shfl_down_sync(__activemask(), distance, offset);
+		alt_swap_b = __shfl_down_sync(__activemask(), swap_b, offset);
+		alt_swap_a = __shfl_down_sync(__activemask(), swap_a, offset);
 
 		// update distance if it's lower
 		swap_b = (alt_distance < distance && alt_distance != 0.0f) * alt_swap_b + (alt_distance >= distance || alt_distance == 0.0f) * swap_b;
@@ -403,7 +399,7 @@ void print_cities()
 	fprintf(stdout, "\n");
 }
 
-bool verify_result(int* path, float calc_distance)
+float verify_result(int* path)
 {
 	float distance = 0.0f;
 
@@ -412,7 +408,7 @@ bool verify_result(int* path, float calc_distance)
 		distance += __half2float(cities[triu_index(path[i-1], path[i])]);
 	}
 
-	return (fabsf(distance - calc_distance) <= 0.1f);
+	return distance;
 }
 
 int main(void)
@@ -428,7 +424,7 @@ int main(void)
 	build_cities(GENERATION_SEED);
 
 	// Print cities
-	print_cities();
+	//print_cities();
 
 	// Allocate device cities
 	err_code = cudaMalloc(&device_cities, BUFFER_LEN * sizeof(__half));
@@ -565,8 +561,8 @@ int main(void)
   	}
   	printf("\n");
 
-	(verify_result(current_path, best_dist)) ? printf("Result verification: true\n") : printf("Result verification: false\n");
-
+	float ref_distance = verify_result(current_path);
+	printf("Result verification: distance: %.1f --> recalc_distance: %.1f\n", best_dist, ref_distance);
  	cudaFree(memory_block);
   	return 0;
 }

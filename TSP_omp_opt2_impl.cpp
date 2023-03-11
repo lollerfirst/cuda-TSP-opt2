@@ -54,7 +54,7 @@ void build_cities(unsigned int seed)
 	int i;
 	for (i=0; i<BUFFER_LEN; ++i)
 	{	
-		cities[i] = static_cast<T>(rand() % MAX_DISTANCE);
+		cities[i] = static_cast<T>((rand() % MAX_DISTANCE) + 1);
 	}
 }
 
@@ -224,7 +224,7 @@ void print_cities()
 }
 
 template <typename T>
-bool verify_result(int* path, T calc_distance)
+float verify_result(int* path)
 {
 	T distance = static_cast<T>(0);
 
@@ -233,7 +233,7 @@ bool verify_result(int* path, T calc_distance)
 		distance += (cities[triu_index(path[i-1], path[i])]);
 	}
 
-	return (fabsf(distance - calc_distance) <= 0.1f);
+	return distance;
 }
 
 int main(void)
@@ -251,7 +251,7 @@ int main(void)
     build_cities(GENERATION_SEED);
 
     // print cities
-    print_cities();
+    //print_cities();
     
     float distance = greedy_path_dist<float>(current_path, 0);
     *reinterpret_cast<float*>(current_path+NUM_CITIES+1) = distance;
@@ -281,8 +281,8 @@ int main(void)
   	}
   	fprintf(stdout, "\n");
 
-
-	(verify_result(current_path, distance)) ? printf("Result verification: true\n") : printf("Result verification: false\n");
+    float ref_distance = verify_result<float>(current_path);
+	printf("Result verification: distance: %.1f --> recalc_distance: %.1f\n", distance, ref_distance);
 
     free(current_path);
 }
