@@ -141,32 +141,32 @@ struct __align__(32) PackedMemory
 
 // Loads matrix A with -(b-1 -> b), -(b -> b+1), -(a-1 -> a), -(a -> a+1)
 // (b-1 -> a), (a -> b+1), (a-1 -> b), (b -> a+1)
-__device__ __inline__ void load_matrices(half* A, half* B, half* device_cities, int* current_path, int swap_a, int swap_b, int hlane)
+__device__ __inline__ void load_matrices(half* A, half* B, half* device_cities, int* current_path, int swap_a, int swap_b, int hlane, bool active)
 {
 	half truth = __int2half_rn(swap_b + 1 != swap_a);
 
-	A[hlane * STRIDE] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_b])];
+	A[hlane * STRIDE] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_b]) * active];
 		B[hlane * STRIDE] = 1.0f;
 
-	A[hlane * STRIDE + 1] = device_cities[triu_index(current_path[swap_b], current_path[swap_b+1])];
+	A[hlane * STRIDE + 1] = device_cities[triu_index(current_path[swap_b], current_path[swap_b+1]) * active];
 		B[hlane * STRIDE + 1] = truth;
 
-	A[hlane * STRIDE + 2] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_a])];
+	A[hlane * STRIDE + 2] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_a]) * active];
 		B[hlane * STRIDE + 2] = truth;
 
-	A[hlane * STRIDE + 3] = device_cities[triu_index(current_path[swap_a], current_path[swap_a+1])];
+	A[hlane * STRIDE + 3] = device_cities[triu_index(current_path[swap_a], current_path[swap_a+1]) * active];
 		B[hlane * STRIDE + 3] = 1.0f;
 
-	A[hlane * STRIDE + 4] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_a])];
+	A[hlane * STRIDE + 4] = device_cities[triu_index(current_path[swap_b-1], current_path[swap_a]) * active];
 		B[hlane * STRIDE + 4] = 1.0f;
 
-	A[hlane * STRIDE + 5] = device_cities[triu_index(current_path[swap_a], current_path[swap_b+1])];
+	A[hlane * STRIDE + 5] = device_cities[triu_index(current_path[swap_a], current_path[swap_b+1]) * active];
 		B[hlane * STRIDE + 5] = truth;
 
-	A[hlane * STRIDE + 6] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_b])];
+	A[hlane * STRIDE + 6] = device_cities[triu_index(current_path[swap_a-1], current_path[swap_b]) * active];
 		B[hlane * STRIDE + 6] = truth;
 
-	A[hlane * STRIDE + 7] = device_cities[triu_index(current_path[swap_b], current_path[swap_a+1])];
+	A[hlane * STRIDE + 7] = device_cities[triu_index(current_path[swap_b], current_path[swap_a+1]) * active];
 		B[hlane * STRIDE + 7] = 1.0f;
 
     // convert to negatives the first 4 values
@@ -206,7 +206,7 @@ __global__ void cuda_calculate_opts(
 	// Warp identification
 	int warp = threadIdx.x / WARP_SIZE;
 
-	if (tid >= NUM_OPTS)
+	if (tid - lane >= NUM_OPTS)
 	{
 		return;
 	}
@@ -217,6 +217,7 @@ __global__ void cuda_calculate_opts(
 	half* A = reinterpret_cast<half*>(C);
 	half* B = A + WARP_SIZE * STRIDE;
 	int& lock = block_mem.lock;
+	bool active = tid < NUM_OPTS;
 	
 	int swap_a, swap_b;
 	float distance;
@@ -240,7 +241,7 @@ __global__ void cuda_calculate_opts(
 	calculate_swap_indices(&swap_b, &swap_a, tid);
 
 	//if (tid < NUM_OPTS)
-	load_matrices(A, B, device_cities, current_path, swap_a, swap_b, lane);
+	load_matrices(A, B, device_cities, current_path, swap_a, swap_b, lane, active);
 	
 	// Load tensor core registers: first half of warp
 	nvcuda::wmma::load_matrix_sync(a_frag, A, STRIDE);
@@ -255,14 +256,15 @@ __global__ void cuda_calculate_opts(
 
 	// Each thread reads his own cell of the diagonal of C
 	distance += (lane < (WARP_SIZE/2)) * C[(hlane) * STRIDE + hlane];
-	__syncwarp();
+	//__syncwarp();
 	
 	//if (tid < NUM_OPTS)
-	load_matrices(A, B, device_cities, current_path, swap_a, swap_b, lane);
+	load_matrices(A, B, device_cities, current_path, swap_a, swap_b, lane, active);
 
 	// Load tensor core registers: second half of warp.
 	nvcuda::wmma::load_matrix_sync(a_frag, A + (WARP_SIZE/2) * STRIDE, STRIDE);
 	nvcuda::wmma::load_matrix_sync(b_frag, B + (WARP_SIZE/2) * STRIDE, STRIDE);
+	nvcuda::wmma::fill_fragment(c_frag, 0.0f);
 
 	// Perform matrix multiplication
 	nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
@@ -272,9 +274,12 @@ __global__ void cuda_calculate_opts(
 
 	// Each thread reads his own cell of the diagonal of C
 	distance += (lane >= (WARP_SIZE/2)) * C[hlane * STRIDE + hlane];
-	__syncwarp();
+	//__syncwarp();
 
 
+	if (tid >= NUM_OPTS)
+		return;
+	
 	// Shuffle down to the first lane of the warp all the values of distance and swap indices.
 	// Each lane is receiving and passing down messages to another lane and evaluating whether to update its own
 	#pragma unroll
